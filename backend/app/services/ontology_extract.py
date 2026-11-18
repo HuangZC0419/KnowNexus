@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+from typing import List, Tuple
+
 import uuid
 import random
 from app.models import TableInfo, ColumnInfo, ImportSelection
 
 def extract_ontology_from_data(
-    relations_data: list[dict],
-    attributes_data: list[dict],
-    inference_data: list[dict] = None,
-    mutex_data: list[dict] = None,
+    relations_data: List[dict],
+    attributes_data: List[dict],
+    inference_data: List[dict] = None,
+    mutex_data: List[dict] = None,
     source_name: str = ""
-) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
+) -> Tuple[List[dict], List[dict], List[dict], List[dict]]:
     """
     从数据行中直接提取知识概念和关系。
     relations_data: [{'头实体': 'A', '关系': 'B', '关系权重': 0.5, '尾实体': 'C'}, ...]
@@ -114,7 +116,7 @@ def extract_ontology_nodes(
     spacing_y: float = 140,
     columns_per_row: int = 3,
     source_name: str = ""
-) -> list[dict]:
+) -> List[dict]:
     """根据用户勾选，生成知识概念列表。
 
     表名 -> 父节点（name=表名, attributes=[]）

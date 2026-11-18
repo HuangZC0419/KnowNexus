@@ -5,6 +5,10 @@ const BACKEND_PORT = process.env.VITE_BACKEND_PORT || "8000";
 
 export default defineConfig({
   plugins: [vue()],
+  build: {
+    target: "chrome109",
+    cssTarget: "chrome109",
+  },
   server: {
     host: "0.0.0.0",
     proxy: {

@@ -6,11 +6,11 @@ import json
 import re
 import sys
 import uuid
-import warnings
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
+from typing_extensions import Literal
 
 import cv2
 import jieba.posseg as pseg
@@ -19,12 +19,19 @@ from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
-
-# 抑制 onnxruntime 在 Win7 上的版本警告
-warnings.filterwarnings("ignore", message=".*Unsupported Windows.*")
+from pydantic import BaseModel, Field, ValidationError
 
 from rapidocr_onnxruntime import RapidOCR
+
+from app.services.mixed_import import (
+    prepare_imported_nodes,
+    unique_project_name,
+)
+from app.services.mixed_local_import import (
+    MixedLocalImportError,
+    build_local_graph,
+    scan_local_projects,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -44,8 +51,8 @@ class OntologyNode(BaseModel):
     label: str = ""
     x: float
     y: float
-    parent_id: str | None = None
-    attributes: list[dict[str, str]] = Field(default_factory=list)
+    parent_id: Optional[str] = None
+    attributes: List[Dict[str, str]] = Field(default_factory=list)
     origin: str = "manual"
 
 
@@ -55,8 +62,8 @@ class OntologyEdge(BaseModel):
     target: str
     relation: str = Field(min_length=1)
     kind: Literal["parent-child", "relation"]
-    characteristics: list[str] = Field(default_factory=list)
-    weight: float | None = None
+    characteristics: List[str] = Field(default_factory=list)
+    weight: Optional[float] = None
     origin: str = "manual"
 
 
@@ -74,19 +81,19 @@ class MutexRule(BaseModel):
 
 
 class GraphState(BaseModel):
-    nodes: list[OntologyNode] = Field(default_factory=list)
-    edges: list[OntologyEdge] = Field(default_factory=list)
-    inference_rules: list[InferenceRule] = Field(default_factory=list)
-    mutex_rules: list[MutexRule] = Field(default_factory=list)
-    relation_weights: dict[str, float] = Field(default_factory=dict)
+    nodes: List[OntologyNode] = Field(default_factory=list)
+    edges: List[OntologyEdge] = Field(default_factory=list)
+    inference_rules: List[InferenceRule] = Field(default_factory=list)
+    mutex_rules: List[MutexRule] = Field(default_factory=list)
+    relation_weights: Dict[str, float] = Field(default_factory=dict)
 
 
 class CreateNodePayload(BaseModel):
     name: str = Field(min_length=1)
     x: float
     y: float
-    parent_id: str | None = None
-    attributes: list[dict[str, str]] = Field(default_factory=list)
+    parent_id: Optional[str] = None
+    attributes: List[Dict[str, str]] = Field(default_factory=list)
 
 
 class CreateEdgePayload(BaseModel):
@@ -94,33 +101,33 @@ class CreateEdgePayload(BaseModel):
     target: str
     relation: str = Field(min_length=1)
     kind: Literal["parent-child", "relation"] = "relation"
-    characteristics: list[str] = Field(default_factory=list)
+    characteristics: List[str] = Field(default_factory=list)
 
 
 class ReparentNodePayload(BaseModel):
-    new_parent_id: str | None = None
+    new_parent_id: Optional[str] = None
 
 
 class OcrExtractResponse(BaseModel):
     mode: Literal["table", "sentence", "mixed"]
     raw_text: str = ""
-    entities: list[str] = Field(default_factory=list)
-    table_rows: list[list[str]] = Field(default_factory=list)
+    entities: List[str] = Field(default_factory=list)
+    table_rows: List[List[str]] = Field(default_factory=list)
 
 
 class OcrImportPayload(BaseModel):
-    entities: list[str] = Field(default_factory=list)
+    entities: List[str] = Field(default_factory=list)
     start_x: float = 120
     start_y: float = 120
     spacing_x: float = 180
     spacing_y: float = 120
-    parent_id: str | None = None
+    parent_id: Optional[str] = None
 
 
 class OcrImportResult(BaseModel):
     created_count: int
-    skipped_entities: list[str] = Field(default_factory=list)
-    nodes: list[OntologyNode] = Field(default_factory=list)
+    skipped_entities: List[str] = Field(default_factory=list)
+    nodes: List[OntologyNode] = Field(default_factory=list)
 
 
 class ProjectInfo(BaseModel):
@@ -138,6 +145,40 @@ class RenameProjectPayload(BaseModel):
     name: str = Field(min_length=1, max_length=100)
 
 
+class MixedLocalProjectInfo(BaseModel):
+    """本地混合标注项目目录摘要"""
+
+    dir: str
+    name: str = ""
+    labels: List[str] = Field(default_factory=list)
+    relation_types: List[str] = Field(default_factory=list)
+    file_count: int = 0
+    file_names: List[str] = Field(default_factory=list)
+
+
+class MixedScanLocalPayload(BaseModel):
+    path: str = Field(min_length=1)
+
+
+class MixedScanLocalResponse(BaseModel):
+    path: str
+    base_dir: str
+    projects: List[MixedLocalProjectInfo] = Field(default_factory=list)
+
+
+class MixedImportLocalPayload(BaseModel):
+    dir: str = Field(min_length=1)
+    project_name: Optional[str] = None
+
+
+class MixedImportResponse(BaseModel):
+    project_id: str
+    project_name: str
+    node_count: int
+    edge_count: int
+    summary: Dict[str, Any] = Field(default_factory=dict)
+
+
 class PathInfo(BaseModel):
     path: str
     probability: float
@@ -146,7 +187,7 @@ class PathInfo(BaseModel):
 class UpstreamFactor(BaseModel):
     factor: str
     factor_id: str
-    paths: list[PathInfo]
+    paths: List[PathInfo]
     combined_probability: float
     level: str  # "很高" "高" "中等" "较低"
 
@@ -154,13 +195,13 @@ class UpstreamFactor(BaseModel):
 class UpstreamResponse(BaseModel):
     target: str
     target_id: str
-    factors: list[UpstreamFactor]
+    factors: List[UpstreamFactor]
 
 
 class DownstreamEffect(BaseModel):
     target: str
     target_id: str
-    paths: list[PathInfo]
+    paths: List[PathInfo]
     combined_probability: float
     level: str
 
@@ -168,7 +209,7 @@ class DownstreamEffect(BaseModel):
 class DownstreamResponse(BaseModel):
     source: str
     source_id: str
-    effects: list[DownstreamEffect]
+    effects: List[DownstreamEffect]
 
 
 class InfluenceRankItem(BaseModel):
@@ -185,14 +226,14 @@ class VulnerabilityItem(BaseModel):
 
 
 class OverviewResponse(BaseModel):
-    influence_ranking: list[InfluenceRankItem]
-    vulnerability_ranking: list[VulnerabilityItem]
-    strongest_paths: list[PathInfo]
+    influence_ranking: List[InfluenceRankItem]
+    vulnerability_ranking: List[VulnerabilityItem]
+    strongest_paths: List[PathInfo]
     summary: str
 
 
 class WeightConfigPayload(BaseModel):
-    relation_weights: dict[str, float]
+    relation_weights: Dict[str, float]
 
 
 app = FastAPI(title="装配工艺知识库软件 API", version="0.1.0")
@@ -227,7 +268,7 @@ def _ensure_projects_dir() -> None:
         INDEX_FILE.write_text("[]", encoding="utf-8")
 
 
-def _load_project_index() -> list[dict]:
+def _load_project_index() -> List[dict]:
     """加载项目索引列表"""
     _ensure_projects_dir()
     try:
@@ -236,7 +277,7 @@ def _load_project_index() -> list[dict]:
         return []
 
 
-def _save_project_index(projects: list[dict]) -> None:
+def _save_project_index(projects: List[dict]) -> None:
     """保存项目索引列表"""
     _ensure_projects_dir()
     try:
@@ -266,6 +307,81 @@ def _load_project_data(project_id: str) -> GraphState:
         return GraphState()
 
 
+def _write_project_data_strict(project_id: str, graph: GraphState) -> None:
+    """严格写入项目图数据，失败时抛出 OSError 由调用方回滚。
+
+    既有 ``_save_project_data`` 保持静默容错以兼容现有接口；
+    新建项目的导入路径需要「失败不返回成功」，因此单独提供严格版本。
+    """
+    _ensure_projects_dir()
+    _project_file_path(project_id).write_text(
+        json.dumps(graph.model_dump(), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _save_project_index_strict(projects: List[dict]) -> None:
+    """严格写入项目索引，失败时抛出 OSError 由调用方回滚。"""
+    _ensure_projects_dir()
+    INDEX_FILE.write_text(
+        json.dumps(projects, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _remove_project_file_quietly(project_id: str) -> None:
+    try:
+        _project_file_path(project_id).unlink()
+    except OSError:
+        pass
+
+
+def _create_project_with_graph(
+    name: str, graph: GraphState
+) -> ProjectInfo:
+    """先写图数据、后写索引地创建项目；任一步失败都回滚，避免脏索引。
+
+    与 ``create_project`` 不同，本函数用于导入场景：保存失败必须向上
+    抛出 HTTPException，不能把失败吞掉后返回成功。
+    """
+    projects = _load_project_index()
+    project_id = str(uuid.uuid4())
+    now = datetime.utcnow().isoformat()
+    new_project = {
+        "id": project_id,
+        "name": name,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    try:
+        _write_project_data_strict(project_id, graph)
+    except (OSError, IOError) as exc:
+        _remove_project_file_quietly(project_id)
+        raise HTTPException(
+            status_code=500,
+            detail="保存项目数据失败：%s" % exc,
+        )
+
+    projects.append(new_project)
+    try:
+        _save_project_index_strict(projects)
+    except (OSError, IOError) as exc:
+        # 索引未落盘时项目不可见，清理刚写入的数据文件。
+        _remove_project_file_quietly(project_id)
+        raise HTTPException(
+            status_code=500,
+            detail="保存项目索引失败：%s" % exc,
+        )
+
+    return ProjectInfo(
+        id=new_project["id"],
+        name=new_project["name"],
+        created_at=new_project["created_at"],
+        updated_at=new_project["updated_at"],
+    )
+
+
 def _save_project_data(project_id: str, graph: GraphState) -> None:
     """将图数据保存到指定项目文件，并更新索引中的 updated_at"""
     _ensure_projects_dir()
@@ -290,7 +406,7 @@ def _save_project_data(project_id: str, graph: GraphState) -> None:
         _save_project_index(projects)
 
 
-def _migrate_old_data() -> str | None:
+def _migrate_old_data() -> Optional[str]:
     """从旧 data.json 迁移数据到项目存储，返回默认项目 ID，无数据则返回 None"""
     old_data_file = Path(__file__).resolve().parent.parent / "data.json"
     if not old_data_file.exists():
@@ -385,9 +501,9 @@ ocr_engine = RapidOCR()
 # OCR 辅助函数
 # ============================================================
 
-def _dedupe_keep_order(items: list[str]) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
+def _dedupe_keep_order(items: List[str]) -> List[str]:
+    seen: Set[str] = set()
+    result: List[str] = []
     for item in items:
         text = item.strip()
         if not text or text in seen:
@@ -446,12 +562,12 @@ def _normalize_symbol(text: str) -> str:
     return text
 
 
-def _extract_nouns_from_text(text: str) -> list[str]:
-    nouns: list[str] = []
+def _extract_nouns_from_text(text: str) -> List[str]:
+    nouns: List[str] = []
     symbols = re.findall(r"(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9_]{0,15}(?![A-Za-z0-9_])", text)
     nouns.extend(symbols)
 
-    symbol_parts: set[str] = set(symbols)
+    symbol_parts: Set[str] = set(symbols)
     for sym in symbols:
         if "_" in sym:
             symbol_parts.update(sym.split("_"))
@@ -473,7 +589,7 @@ def _extract_nouns_from_text(text: str) -> list[str]:
     return _dedupe_keep_order(fallback)
 
 
-def _group_rows_by_y(cells: list[dict]) -> list[list[dict]]:
+def _group_rows_by_y(cells: List[dict]) -> List[List[dict]]:
     if not cells:
         return []
 
@@ -481,7 +597,7 @@ def _group_rows_by_y(cells: list[dict]) -> list[list[dict]]:
     median_h = sorted(heights)[len(heights) // 2]
     row_tol = max(16.0, median_h * 0.8)
 
-    rows: list[dict] = []
+    rows: List[dict] = []
     for cell in sorted(cells, key=lambda x: x["cy"]):
         placed = False
         for row in rows:
@@ -494,7 +610,7 @@ def _group_rows_by_y(cells: list[dict]) -> list[list[dict]]:
         if not placed:
             rows.append({"y": cell["cy"], "cells": [cell], "count": 1})
 
-    result: list[list[dict]] = []
+    result: List[List[dict]] = []
     for row in rows:
         result.append(sorted(row["cells"], key=lambda x: x["cx"]))
     return result
@@ -510,7 +626,7 @@ def _parse_ocr_image(image_bytes: bytes) -> OcrExtractResponse:
     if not ocr_result:
         return OcrExtractResponse(mode="sentence", raw_text="", entities=[], table_rows=[])
 
-    cells: list[dict] = []
+    cells: List[dict] = []
     for item in ocr_result:
         if len(item) < 2:
             continue
@@ -800,6 +916,139 @@ def create_project(payload: CreateProjectPayload) -> ProjectInfo:
     )
 
 
+# ============================================================
+# 混合标注（LabelFast）本地目录导入 API
+# ============================================================
+
+# 混合标注导入的规模上限：超过后拒绝解析/落盘，防止内存与画布被撑爆。
+MAX_IMPORT_RECORDS = 50000
+MAX_IMPORT_NODES = 50000
+MAX_IMPORT_EDGES = 100000
+
+
+def _mixed_local_http_error(exc: MixedLocalImportError) -> HTTPException:
+    """按本地读取错误语义映射 HTTP 状态码与中文提示。"""
+    kind = getattr(exc, "kind", "read")
+    if kind == "invalid":
+        return HTTPException(status_code=400, detail=str(exc))
+    if kind == "not_found":
+        return HTTPException(status_code=404, detail=str(exc))
+    if kind == "too_large":
+        return HTTPException(status_code=413, detail=str(exc))
+    if kind == "empty":
+        # 空项目在业务上属于「无法生成图谱」，沿用既有 502 语义。
+        return HTTPException(status_code=502, detail=str(exc))
+    return HTTPException(status_code=502, detail=str(exc))
+
+
+def _validate_mixed_graph_import(
+    nodes: List[dict], edges: List[dict], summary: dict
+) -> None:
+    """在写盘前校验空图谱与规模上限，避免创建空项目或超大项目。"""
+    if not nodes:
+        warnings = summary.get("warnings") or []
+        brief = "；".join(str(item) for item in warnings[:3])
+        detail = "混合标注项目没有可导入的图谱数据"
+        if brief:
+            detail = "%s（%s）" % (detail, brief)
+        raise HTTPException(status_code=502, detail=detail)
+
+    records = summary.get("records")
+    if not isinstance(records, int):
+        records = len(nodes) + len(edges)
+    if (
+        records > MAX_IMPORT_RECORDS
+        or len(nodes) > MAX_IMPORT_NODES
+        or len(edges) > MAX_IMPORT_EDGES
+    ):
+        raise HTTPException(
+            status_code=413,
+            detail="图谱规模超过上限（记录/节点/边）",
+        )
+
+
+def _stored_edge(edge: dict) -> dict:
+    """把解析层的 hierarchy 边转换为 GraphState 的 parent-child 表述。"""
+    item = dict(edge)
+    if item.get("kind") in ("hierarchy", "parent-child"):
+        item["kind"] = "parent-child"
+        item["weight"] = None
+    return item
+
+
+@app.post("/api/mixed/scan-local", response_model=MixedScanLocalResponse)
+def scan_mixed_local_projects(
+    payload: MixedScanLocalPayload,
+) -> MixedScanLocalResponse:
+    """扫描本地混合标注项目目录，返回可导入项目摘要。
+
+    ``path`` 可以是单个项目目录，也可以是包含多个项目子目录的父目录；
+    扫描过程只读 project.json / files/*/meta.json，不做任何写入。
+    """
+    try:
+        result = scan_local_projects(payload.path)
+    except MixedLocalImportError as exc:
+        raise _mixed_local_http_error(exc)
+
+    return MixedScanLocalResponse(
+        path=result["path"],
+        base_dir=result["base_dir"],
+        projects=[MixedLocalProjectInfo(**item) for item in result["projects"]],
+    )
+
+
+@app.post("/api/mixed/import-local", response_model=MixedImportResponse)
+def import_local_mixed_project(
+    payload: MixedImportLocalPayload,
+) -> MixedImportResponse:
+    """读取本地混合标注项目目录并生成知识图谱，创建新的知识库项目。
+
+    流程：读取 project.json / files/* -> 空图谱/规模校验
+    -> 自动布局 -> 注入 parent_id -> 先写数据文件、后写索引地落盘。
+    任一步失败都会回滚，不会创建空项目，也不会覆盖任何已有项目。
+    """
+    try:
+        result = build_local_graph(payload.dir)
+    except MixedLocalImportError as exc:
+        raise _mixed_local_http_error(exc)
+
+    # 空图谱与规模校验必须发生在任何写盘动作之前。
+    _validate_mixed_graph_import(result.nodes, result.edges, result.summary)
+
+    prepared_nodes = prepare_imported_nodes(result.nodes, result.edges)
+
+    try:
+        graph = GraphState(
+            nodes=[OntologyNode(**node) for node in prepared_nodes],
+            edges=[OntologyEdge(**_stored_edge(edge)) for edge in result.edges],
+            inference_rules=[],
+            mutex_rules=[],
+            relation_weights={},
+        )
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="本地混合标注图谱数据不合法：%s" % exc,
+        )
+
+    requested_name = (
+        (payload.project_name or "").strip() or result.project_name
+    )
+    existing_names = [p.get("name", "") for p in _load_project_index()]
+    final_name = unique_project_name(requested_name, existing_names)
+
+    # 先写数据文件再写索引，失败时回滚，绝不返回「成功但未落盘」。
+    project_info = _create_project_with_graph(final_name, graph)
+
+    return MixedImportResponse(
+        project_id=project_info.id,
+        project_name=project_info.name,
+        node_count=len(graph.nodes),
+        edge_count=len(graph.edges),
+        summary=result.summary,
+    )
+
+
 @app.put("/api/projects/{project_id}", response_model=ProjectInfo)
 def rename_project(project_id: str, payload: RenameProjectPayload) -> ProjectInfo:
     projects = _load_project_index()
@@ -865,10 +1114,10 @@ def delete_project(project_id: str):
 import openpyxl
 
 USERS_XLSX = BASE_DIR / "users.xlsx"
-_auth_sessions: dict[str, dict] = {}  # {token: {username, name, role}}
+_auth_sessions: Dict[str, dict] = {}  # {token: {username, name, role}}
 
 
-def _load_users() -> list[dict]:
+def _load_users() -> List[dict]:
     """从 users.xlsx 加载用户列表（username/password 均转为字符串）"""
     if not USERS_XLSX.exists():
         return []
@@ -895,10 +1144,10 @@ class LoginPayload(BaseModel):
 class LoginResponse(BaseModel):
     success: bool
     message: str = ""
-    token: str | None = None
-    username: str | None = None
-    name: str | None = None
-    role: str | None = None
+    token: Optional[str] = None
+    username: Optional[str] = None
+    name: Optional[str] = None
+    role: Optional[str] = None
 
 
 @app.post("/api/auth/login", response_model=LoginResponse)
@@ -999,8 +1248,8 @@ def ocr_import(payload: OcrImportPayload) -> OcrImportResult:
         return OcrImportResult(created_count=0, skipped_entities=[], nodes=[])
 
     existing_names = {n.name for n in graph_state.nodes}
-    skipped: list[str] = []
-    created_nodes: list[OntologyNode] = []
+    skipped: List[str] = []
+    created_nodes: List[OntologyNode] = []
 
     for i, entity in enumerate(entities):
         if entity in existing_names:
@@ -1059,7 +1308,7 @@ def ocr_llm_status():
 # 贝叶斯网络影响分析
 # ============================================================
 
-def _get_edge_weight(edge: OntologyEdge, relation_weights: dict[str, float]) -> float:
+def _get_edge_weight(edge: OntologyEdge, relation_weights: Dict[str, float]) -> float:
     """获取边的因果权重"""
     if edge.weight is not None:
         return edge.weight  # 显式覆盖
@@ -1067,10 +1316,10 @@ def _get_edge_weight(edge: OntologyEdge, relation_weights: dict[str, float]) -> 
 
 
 def _build_expanded_adjacency(
-    edges: list[OntologyEdge],
-    inference_rules: list[InferenceRule],
-    relation_weights: dict[str, float],
-) -> tuple[dict[str, list[tuple[str, str, float, bool]]], set[tuple[str, str, str]]]:
+    edges: List[OntologyEdge],
+    inference_rules: List[InferenceRule],
+    relation_weights: Dict[str, float],
+) -> Tuple[Dict[str, List[Tuple[str, str, float, bool]]], Set[Tuple[str, str, str]]]:
     """构建扩展有向图邻接表，包含推理规则推导的间接边。
 
     返回:
@@ -1078,8 +1327,8 @@ def _build_expanded_adjacency(
         adjacency: {source_id: [(target_id, relation, probability, is_derived), ...]}
         triggered_rules: {(rel1, rel2, inferred_rel), ...} 实际触发的规则集合
     """
-    adj: dict[str, list[tuple[str, str, float, bool]]] = defaultdict(list)
-    triggered: set[tuple[str, str, str]] = set()
+    adj: Dict[str, List[Tuple[str, str, float, bool]]] = defaultdict(list)
+    triggered: Set[Tuple[str, str, str]] = set()
 
     # 1. 添加所有显式关系边（排除 parent-child）
     for e in edges:
@@ -1117,24 +1366,24 @@ def _build_expanded_adjacency(
 
 
 def _find_all_paths(
-    adj: dict[str, list[tuple[str, str, float, bool]]],
+    adj: Dict[str, List[Tuple[str, str, float, bool]]],
     start: str,
     end: str,
     max_paths: int = 30,
-) -> list[tuple[list[str], list[str], list[float], float]]:
+) -> List[Tuple[List[str], List[str], List[float], float]]:
     """DFS 深度优先搜索从 start 到 end 的所有简单路径（不重复节点）。
 
     返回:
         [(node_path, relation_path, prob_list, path_probability), ...]
         按路径概率降序排列
     """
-    all_paths: list[tuple[list[str], list[str], list[float], float]] = []
+    all_paths: List[Tuple[List[str], List[str], List[float], float]] = []
 
     def dfs(
         current: str,
-        nodes_visited: list[str],
-        rels_visited: list[str],
-        probs_visited: list[float],
+        nodes_visited: List[str],
+        rels_visited: List[str],
+        probs_visited: List[float],
     ) -> None:
         if len(all_paths) >= max_paths:
             return
@@ -1167,7 +1416,7 @@ def _find_all_paths(
     return all_paths
 
 
-def _noisy_or(probabilities: list[float]) -> float:
+def _noisy_or(probabilities: List[float]) -> float:
     """Noisy-OR 模型合并多条独立路径概率。
 
     P_combined = 1 - prod(1 - P_i)
@@ -1192,15 +1441,15 @@ def _cumulative_level(prob: float) -> str:
 
 
 def _format_path_string(
-    node_path: list[str],
-    rel_path: list[str],
-    id_to_name: dict[str, str],
+    node_path: List[str],
+    rel_path: List[str],
+    id_to_name: Dict[str, str],
 ) -> str:
     """将路径格式化为可读的中文展示字符串。
 
     示例: 预热温度→控制→精馏塔→产生→塔顶产物→决定→产品纯度
     """
-    parts: list[str] = []
+    parts: List[str] = []
     for i, node_id in enumerate(node_path):
         parts.append(id_to_name.get(node_id, node_id))
         if i < len(rel_path):
@@ -1233,7 +1482,7 @@ def trace_upstream(
     inference_rules = graph.inference_rules
     relation_weights = graph.relation_weights
 
-    id_to_name: dict[str, str] = {n.id: n.name for n in nodes}
+    id_to_name: Dict[str, str] = {n.id: n.name for n in nodes}
 
     # 3. 验证目标节点存在
     if target not in id_to_name:
@@ -1244,7 +1493,7 @@ def trace_upstream(
     adj, _ = _build_expanded_adjacency(edges, inference_rules, relation_weights)
 
     # 5. 找出所有能到达目标的上游因子
-    factors: list[UpstreamFactor] = []
+    factors: List[UpstreamFactor] = []
     for node in nodes:
         if node.id == target:
             continue
@@ -1263,7 +1512,7 @@ def trace_upstream(
         level = _cumulative_level(combined_prob)
 
         # 格式化所有路径
-        formatted_paths: list[PathInfo] = []
+        formatted_paths: List[PathInfo] = []
         for node_path, rel_path, _, prob in paths:
             formatted_paths.append(PathInfo(
                 path=_format_path_string(node_path, rel_path, id_to_name),
@@ -1312,7 +1561,7 @@ def propagate_downstream(
     inference_rules = graph.inference_rules
     relation_weights = graph.relation_weights
 
-    id_to_name: dict[str, str] = {n.id: n.name for n in nodes}
+    id_to_name: Dict[str, str] = {n.id: n.name for n in nodes}
 
     # 3. 验证源节点存在
     if source not in id_to_name:
@@ -1323,7 +1572,7 @@ def propagate_downstream(
     adj, _ = _build_expanded_adjacency(edges, inference_rules, relation_weights)
 
     # 5. BFS 找出所有能从源节点到达的下游节点
-    reachable_ids: set[str] = set()
+    reachable_ids: Set[str] = set()
     queue = [source]
     while queue:
         current = queue.pop(0)
@@ -1333,7 +1582,7 @@ def propagate_downstream(
                 queue.append(next_node)
 
     # 6. 对每个可达下游节点计算影响
-    effects: list[DownstreamEffect] = []
+    effects: List[DownstreamEffect] = []
     for target_id in reachable_ids:
         paths = _find_all_paths(adj, source, target_id)
         if not paths:
@@ -1343,7 +1592,7 @@ def propagate_downstream(
         combined_prob = _noisy_or(path_probabilities)
         level = _cumulative_level(combined_prob)
 
-        formatted_paths: list[PathInfo] = []
+        formatted_paths: List[PathInfo] = []
         for node_path, rel_path, _, prob in paths:
             formatted_paths.append(PathInfo(
                 path=_format_path_string(node_path, rel_path, id_to_name),
@@ -1390,14 +1639,14 @@ def bayesian_overview(project_id: str) -> OverviewResponse:
     inference_rules = graph.inference_rules
     relation_weights = graph.relation_weights
 
-    id_to_name: dict[str, str] = {n.id: n.name for n in nodes}
+    id_to_name: Dict[str, str] = {n.id: n.name for n in nodes}
     all_node_ids = set(id_to_name.keys())
 
     # 3. 构建扩展有向图
     adj, _ = _build_expanded_adjacency(edges, inference_rules, relation_weights)
 
     # 4. 影响力排名：对每个节点，BFS 计算可达节点数，score = 最大出边权重
-    influence_ranking: list[InfluenceRankItem] = []
+    influence_ranking: List[InfluenceRankItem] = []
     for node in nodes:
         if node.id not in adj:
             influence_ranking.append(InfluenceRankItem(
@@ -1409,7 +1658,7 @@ def bayesian_overview(project_id: str) -> OverviewResponse:
             continue
 
         # BFS 计算可达节点数
-        visited: set[str] = {node.id}
+        visited: Set[str] = {node.id}
         queue = [node.id]
         while queue:
             current = queue.pop(0)
@@ -1434,14 +1683,14 @@ def bayesian_overview(project_id: str) -> OverviewResponse:
     influence_ranking.sort(key=lambda x: (x.score, x.reachable_nodes), reverse=True)
 
     # 5. 脆弱性排名：统计每个节点的入边数量
-    incoming_counts: dict[str, int] = defaultdict(int)
+    incoming_counts: Dict[str, int] = defaultdict(int)
     for nid in all_node_ids:
         incoming_counts[nid] = 0
     for src_id, targets in adj.items():
         for tgt_id, _rel, _prob, _derived in targets:
             incoming_counts[tgt_id] += 1
 
-    vulnerability_ranking: list[VulnerabilityItem] = []
+    vulnerability_ranking: List[VulnerabilityItem] = []
     for node in nodes:
         vulnerability_ranking.append(VulnerabilityItem(
             node=node.name,
@@ -1453,14 +1702,14 @@ def bayesian_overview(project_id: str) -> OverviewResponse:
     vulnerability_ranking.sort(key=lambda x: x.incoming_links, reverse=True)
 
     # 6. 最强因果链：从影响力排名前10的节点出发，寻找跨越多节点的长路径
-    strongest_paths: list[PathInfo] = []
+    strongest_paths: List[PathInfo] = []
     top_influencers = [item for item in influence_ranking[:10] if item.reachable_nodes >= 1]
 
-    all_path_candidates: list[tuple[str, float]] = []
+    all_path_candidates: List[Tuple[str, float]] = []
     for influencer in top_influencers:
         src_id = influencer.node_id
         # BFS找到该节点能到达的所有目标
-        reachable: set[str] = set()
+        reachable: Set[str] = set()
         queue = [src_id]
         while queue:
             current = queue.pop(0)
@@ -1485,7 +1734,7 @@ def bayesian_overview(project_id: str) -> OverviewResponse:
         strongest_paths.append(PathInfo(path=path_str, probability=round(prob, 4)))
 
     # 7. 生成总结文本（完全通用）
-    summary_parts: list[str] = []
+    summary_parts: List[str] = []
     if influence_ranking:
         top_influencer = influence_ranking[0]
         summary_parts.append(
@@ -1514,7 +1763,7 @@ def bayesian_overview(project_id: str) -> OverviewResponse:
 
 
 @app.get("/api/bayesian/weights/{project_id}")
-def get_weights(project_id: str) -> dict[str, object]:
+def get_weights(project_id: str) -> Dict[str, object]:
     """获取项目的贝叶斯关系权重配置"""
     projects = _load_project_index()
     if not any(p["id"] == project_id for p in projects):
@@ -1524,7 +1773,7 @@ def get_weights(project_id: str) -> dict[str, object]:
 
 
 @app.put("/api/bayesian/weights/{project_id}")
-def update_weights(project_id: str, payload: WeightConfigPayload) -> dict[str, str]:
+def update_weights(project_id: str, payload: WeightConfigPayload) -> Dict[str, str]:
     """更新项目的贝叶斯关系权重配置。
 
     保存到项目的 relation_weights 字段。

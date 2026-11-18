@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
@@ -23,7 +23,7 @@ class ConceptMatch(BaseModel):
     match_snippet: str  # 命中字段的完整原值，非上下文片段
     parent_path: str = ""
     origin: str = "manual"
-    attributes: list[dict[str, str]] = Field(default_factory=list)
+    attributes: List[Dict[str, str]] = Field(default_factory=list)
 
 
 class RelationMatch(BaseModel):
@@ -42,11 +42,11 @@ class RelationMatch(BaseModel):
 class KnowledgeSearchResponse(BaseModel):
     query: str
     total: int  # 本次实际返回的条数（受 limit 截断），而非命中总数
-    concepts: list[ConceptMatch] = Field(default_factory=list)
-    relations: list[RelationMatch] = Field(default_factory=list)
+    concepts: List[ConceptMatch] = Field(default_factory=list)
+    relations: List[RelationMatch] = Field(default_factory=list)
 
 
-def _parse_scopes(raw: str) -> set[str]:
+def _parse_scopes(raw: str) -> Set[str]:
     """将 'concept,attribute' 解析为范围集合；非法或空值回退为 all"""
     parts = {p.strip().lower() for p in (raw or "").split(",") if p.strip()}
     if not parts or "all" in parts:
@@ -55,14 +55,14 @@ def _parse_scopes(raw: str) -> set[str]:
     return valid or {"all"}
 
 
-def _in(scope: str, scopes: set[str]) -> bool:
+def _in(scope: str, scopes: Set[str]) -> bool:
     return "all" in scopes or scope in scopes
 
 
-def _build_parent_path(node: Any, node_map: dict[str, Any]) -> str:
+def _build_parent_path(node: Any, node_map: Dict[str, Any]) -> str:
     """沿 parent_id 向上回溯，返回 'A / B / ' 形式的祖先路径（自动防环）"""
-    parts: list[str] = []
-    seen: set[str] = set()
+    parts: List[str] = []
+    seen: Set[str] = set()
     current = node
     while current is not None and current.parent_id:
         pid = current.parent_id
@@ -79,7 +79,7 @@ def _build_parent_path(node: Any, node_map: dict[str, Any]) -> str:
     return " / ".join(reversed(parts)) + " / "
 
 
-def _match_node(node: Any, kw: str, scopes: set[str]) -> tuple[str, str] | None:
+def _match_node(node: Any, kw: str, scopes: Set[str]) -> Optional[Tuple[str, str]]:
     """返回 (match_field, match_snippet)；未命中返回 None"""
     if _in("concept", scopes) and kw in (node.name or "").lower():
         return ("name", node.name)
@@ -97,7 +97,7 @@ def _match_node(node: Any, kw: str, scopes: set[str]) -> tuple[str, str] | None:
     return None
 
 
-def _match_edge(edge: Any, kw: str, scopes: set[str]) -> tuple[str, str] | None:
+def _match_edge(edge: Any, kw: str, scopes: Set[str]) -> Optional[Tuple[str, str]]:
     """返回 (match_field, match_snippet)；未命中返回 None"""
     if _in("relation", scopes) and kw in (edge.relation or "").lower():
         return ("relation", edge.relation)
@@ -131,7 +131,7 @@ def search_knowledge(
 
     node_map = {n.id: n for n in graph.nodes}
 
-    concepts: list[ConceptMatch] = []
+    concepts: List[ConceptMatch] = []
     for node in graph.nodes:
         hit = _match_node(node, kw, scopes)
         if hit is None:
@@ -151,7 +151,7 @@ def search_knowledge(
         if len(concepts) >= limit:
             break
 
-    relations: list[RelationMatch] = []
+    relations: List[RelationMatch] = []
     for edge in graph.edges:
         hit = _match_edge(edge, kw, scopes)
         if hit is None:

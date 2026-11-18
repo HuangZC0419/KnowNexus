@@ -4,11 +4,13 @@ import DbConnector from "./DbConnector.vue";
 import FileUploader from "./FileUploader.vue";
 import SchemaPreview from "./SchemaPreview.vue";
 import JsonlImportPreview from "./JsonlImportPreview.vue";
+import MixedImportDialog from "./MixedImportDialog.vue";
 
-const emit = defineEmits(["import-nodes"]);
+const emit = defineEmits(["import-nodes", "mixed-imported"]);
 
 const showDbDialog = ref(false);
 const showFileDialog = ref(false);
+const showMixedDialog = ref(false);
 const previewData = ref(null); // {source_id, tables, columns, sourceType:'db'|'file'}
 
 function onPreviewReady(data) {
@@ -24,6 +26,12 @@ function onImportDone(nodes, edges, inf_rules, mut_rules, options) {
 
 function onBack() {
   previewData.value = null;
+}
+
+// 混合标注导入完成：交由 App.vue 刷新项目列表并打开新项目画布
+function onMixedImported(result) {
+  showMixedDialog.value = false;
+  emit("mixed-imported", result);
 }
 </script>
 
@@ -70,6 +78,28 @@ function onBack() {
           </svg>
         </div>
       </button>
+
+      <!-- 混合标注导入入口（次级入口） -->
+      <button class="ds-entry-btn ds-mixed-btn" @click="showMixedDialog = true">
+        <div class="ds-entry-icon">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="18" cy="5" r="3"/>
+            <circle cx="6" cy="12" r="3"/>
+            <circle cx="18" cy="19" r="3"/>
+            <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/>
+            <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+          </svg>
+        </div>
+        <div class="ds-entry-text">
+          <span class="ds-entry-label">导入混合标注</span>
+          <span class="ds-entry-desc">从 LabelFast 项目生成知识图谱</span>
+        </div>
+        <div class="ds-entry-arrow">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <polyline points="9 18 15 12 9 6"/>
+          </svg>
+        </div>
+      </button>
     </div>
 
     <!-- 数据库连接弹窗 -->
@@ -84,6 +114,13 @@ function onBack() {
       v-if="showFileDialog"
       @close="showFileDialog = false"
       @preview-ready="onPreviewReady"
+    />
+
+    <!-- 混合标注导入弹窗 -->
+    <MixedImportDialog
+      v-if="showMixedDialog"
+      @close="showMixedDialog = false"
+      @imported="onMixedImported"
     />
 
     <!-- 预览面板：JSONL 使用知识图谱预览，其余使用表/字段预览 -->
@@ -191,6 +228,21 @@ function onBack() {
 
 .ds-file-btn:hover .ds-entry-icon {
   color: #10b981;
+}
+
+/* 混合标注为次级入口：沿用同一行结构，仅用紫色强调区分 */
+.ds-mixed-btn:hover {
+  background: #f5f3ff;
+  border-color: #ddd6fe;
+}
+
+.ds-mixed-btn:hover .ds-entry-icon {
+  color: #7c3aed;
+}
+
+.ds-mixed-btn .ds-entry-icon {
+  background: #f5f3ff;
+  color: #8b5cf6;
 }
 
 .ds-entry-icon {

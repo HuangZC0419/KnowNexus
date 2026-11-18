@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Dict, List, Tuple
+
 import json
 
 from pathlib import Path
@@ -34,6 +36,10 @@ def _normalize_source_type(origin: str) -> str:
         return origin
     if origin == "sim_dameng":
         return "dameng"
+    # 混合标注（LabelFast）导入的图谱归入 JSONL 来源，
+    # 文件名由 _parse_origin 从冒号后的 origin 名称保留。
+    if origin == "labelfast":
+        return "jsonl"
     # 兼容旧版本：文件导入时曾把 file_id(uuid) 直接写入 origin
     if len(origin) == 36 and origin.count("-") == 4:
         return "excel"
@@ -52,7 +58,7 @@ def _source_name_for_type(source_type: str) -> str:
     return "系统默认数据源"
 
 
-def _parse_origin(origin: str) -> tuple[str, str]:
+def _parse_origin(origin: str) -> Tuple[str, str]:
     raw = (origin or "").strip()
     source_type = _normalize_source_type(raw)
     if ":" in raw:
@@ -71,7 +77,7 @@ def _source_table_label(source_type: str, source_name: str) -> str:
     return "默认映射表"
 
 
-def _origin_to_source(origin: str) -> tuple[str, str, str]:
+def _origin_to_source(origin: str) -> Tuple[str, str, str]:
     source_type, source_name = _parse_origin(origin)
     if source_type == "manual":
         source_name = "人工维护数据"
@@ -79,8 +85,8 @@ def _origin_to_source(origin: str) -> tuple[str, str, str]:
     return source_type, source_name, table_label
 
 
-def _build_sources_from_nodes(nodes: list[dict], domain_id: str) -> list[dict]:
-    groups: dict[tuple[str, str, str], dict] = {}
+def _build_sources_from_nodes(nodes: List[dict], domain_id: str) -> List[dict]:
+    groups: Dict[Tuple[str, str, str], dict] = {}
     for n in nodes:
         source_type, source_name, table_label = _origin_to_source(n.get("origin", "manual"))
         key = (source_type, source_name, table_label)
@@ -100,7 +106,7 @@ def _build_sources_from_nodes(nodes: list[dict], domain_id: str) -> list[dict]:
     return list(groups.values())
 
 
-def _ensure_nodes_in_domains(domains: list[dict], nodes: list[dict]) -> list[dict]:
+def _ensure_nodes_in_domains(domains: List[dict], nodes: List[dict]) -> List[dict]:
     if not domains:
         return domains
 
@@ -191,7 +197,7 @@ def _normalize_perspective_config(project_id: str, graph: dict, config: dict) ->
     mappings = [dict(m) for m in normalized.get("mappings", [])]
 
     # 以图数据的 origin 为准：逐节点校正 mapping 的来源信息，并补全缺失节点的 mapping
-    derived_by_node: dict[str, dict] = {}
+    derived_by_node: Dict[str, dict] = {}
     for n in nodes:
         nid = n.get("id")
         if not nid:
@@ -279,7 +285,7 @@ async def get_leader_view(project_id: str):
 
     node_map = {n["id"]: n.get("name", n["id"]) for n in graph.get("nodes", [])}
     mappings = config.get("mappings", [])
-    source_onto_map: dict[str, list[str]] = {}
+    source_onto_map: Dict[str, List[str]] = {}
     for m in mappings:
         sn = m.get("source_name", "")
         nid = m.get("ontology_node_id", "")
@@ -312,6 +318,8 @@ async def get_leader_view(project_id: str):
                 "dameng": sum(1 for s in sources if s.type == "dameng"),
                 "excel": sum(1 for s in sources if s.type == "excel"),
                 "csv": sum(1 for s in sources if s.type == "csv"),
+                # 与 labelfast -> jsonl 的来源映射保持一致，避免混合标注来源缺失。
+                "jsonl": sum(1 for s in sources if s.type == "jsonl"),
             },
             "manual_node_count": len(manual_node_ids),
             "manual_edge_count": manual_edge_count,
@@ -385,7 +393,7 @@ async def get_domains(project_id: str):
 
 
 @router.put("/{project_id}/domains")
-async def update_domains(project_id: str, domains: list[BusinessDomain]):
+async def update_domains(project_id: str, domains: List[BusinessDomain]):
     config = _load_perspective_config(project_id)
     config["domains"] = [d.model_dump() for d in domains]
     _save_perspective_config(project_id, config)
@@ -393,7 +401,7 @@ async def update_domains(project_id: str, domains: list[BusinessDomain]):
 
 
 @router.put("/{project_id}/mappings")
-async def update_mappings(project_id: str, mappings: list[DataMapping]):
+async def update_mappings(project_id: str, mappings: List[DataMapping]):
     config = _load_perspective_config(project_id)
     config["mappings"] = [m.model_dump() for m in mappings]
     _save_perspective_config(project_id, config)
@@ -407,7 +415,7 @@ async def get_sources(project_id: str):
 
 
 @router.put("/{project_id}/sources")
-async def update_sources(project_id: str, sources: list[DataSourceInfo]):
+async def update_sources(project_id: str, sources: List[DataSourceInfo]):
     config = _load_perspective_config(project_id)
     config["sources"] = [s.model_dump() for s in sources]
     _save_perspective_config(project_id, config)

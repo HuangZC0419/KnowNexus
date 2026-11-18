@@ -18,12 +18,17 @@ import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Union
 
 FILE_LABEL = "文件"
 DEFAULT_ENTITY_LABEL = "实体"
 DEFAULT_RELATION = "关联"
 CONTAIN_RELATION = "包含"
+
+# LabelFast 混合标注 v2 的图谱导出格式（graph.jsonl）。
+GRAPH_FORMAT = "labelfast-hybrid/v2"
+GRAPH_ID_PREFIX = "lf:"
+GRAPH_RECORD_TYPES = ("meta", "node", "edge")
 
 # 卡片尺寸与布局参数：200×88 对应前端 NodeCard.vue 的卡片尺寸。
 # 注意：Task 6 为卡片增加标签条后，CARD_H 需要重新核对。
@@ -39,6 +44,15 @@ BLOCK_GAP = 80
 FILE_NAME_KEYS = (
     "file_name", "fileName", "filename", "document_name", "doc_name",
     "source_file", "file", "文件名", "文档名", "文件",
+)
+# graph.jsonl 多文件项目：meta 行携带文件 id，节点 id 以该 id 作为文件段，
+# 例如 doc:<fid>、sec:<fid>:s0001、ent:<fid>:1。
+FILE_ID_KEYS = (
+    "file_id", "fileId", "source_id", "sourceId",
+    "document_id", "doc_id", "id",
+)
+_GRAPH_NODE_FILE_ID_RE = re.compile(
+    r"^(?:doc|sec|par|fig|ent):([^:]+)"
 )
 # 强别名允许字符串元素；弱别名（labels/annotations）必须是带文本字段的对象
 STRONG_ENTITY_ARRAY_KEYS = (
@@ -80,9 +94,9 @@ class JsonlParseResult:
         用于和 build_graph 的同类计数合并后透出给调用方。
     """
 
-    records: list[dict] = field(default_factory=list)
-    mappings: dict[str, str] = field(default_factory=dict)
-    warnings: list[str] = field(default_factory=list)
+    records: List[dict] = field(default_factory=list)
+    mappings: Dict[str, str] = field(default_factory=dict)
+    warnings: List[str] = field(default_factory=list)
     total_lines: int = 0
     bad_lines: int = 0
     unresolved_relations: int = 0
@@ -386,7 +400,7 @@ def _build_text_map(entities: list) -> dict:
 
 
 def parse_jsonl(
-    path: str | Path, fallback_file_name: str = ""
+    path: Union[str, Path], fallback_file_name: str = ""
 ) -> JsonlParseResult:
     """解析 JSONL 文件，返回规范化记录与识别到的字段映射。
 
@@ -395,10 +409,10 @@ def parse_jsonl(
     """
     text = _read_text(path)
     raw_records, bad_lines, total_lines, warnings = _split_records(text)
-    mappings: dict[str, str] = {}
-    prepared: list[dict] = []
-    file_id_maps: dict[str, dict] = {}
-    file_text_maps: dict[str, dict] = {}
+    mappings: Dict[str, str] = {}
+    prepared: List[dict] = []
+    file_id_maps: Dict[str, dict] = {}
+    file_text_maps: Dict[str, dict] = {}
 
     # 第一遍：提取实体，建立记录内与文件级的端点映射
     for record_index, record in enumerate(raw_records):
@@ -453,7 +467,7 @@ def parse_jsonl(
         })
 
     # 第二遍：解析关系，先记录内映射，再回退到同文件的其他记录
-    records: list[dict] = []
+    records: List[dict] = []
     unresolved_relations = 0
     for item in prepared:
         record_index = item["record_index"]
@@ -515,6 +529,329 @@ def parse_jsonl(
         bad_lines=bad_lines,
         unresolved_relations=unresolved_relations,
     )
+
+
+def _graph_record_text(value) -> str:
+    """保留原始文本（仅清理孤立代理字符），非标量返回空串。"""
+    if isinstance(value, str):
+        return _clean_text(value)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return ""
+
+
+def _graph_line_json(line: str):
+    """解析单行 JSON，兼容行首脏前缀（与旧格式解析保持一致）。"""
+    brace_at = line.find("{")
+    candidate = line[brace_at:] if brace_at >= 0 else line
+    return json.loads(candidate)
+
+
+def _looks_like_graph_record(obj) -> bool:
+    if not isinstance(obj, dict):
+        return False
+    if obj.get("format") == GRAPH_FORMAT:
+        return True
+    return obj.get("record") in GRAPH_RECORD_TYPES
+
+
+def is_graph_jsonl(path: Union[str, Path]) -> bool:
+    """检测文件是否为 LabelFast graph.jsonl（只看首个非空行）。
+
+    判定条件：首个非空 JSON 对象含 record=meta/node/edge，
+    或显式声明 format=labelfast-hybrid/v2。
+    """
+    try:
+        text = _read_text(path)
+    except OSError:
+        return False
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = _graph_line_json(line)
+        except (ValueError, RecursionError):
+            return False
+        return _looks_like_graph_record(obj)
+    return False
+
+
+def _graph_id(raw_id) -> str:
+    """把导出侧 id 统一加上 lf: 前缀；已带前缀时保持幂等。"""
+    text = _graph_record_text(raw_id).strip()
+    if not text:
+        return ""
+    if text.startswith(GRAPH_ID_PREFIX):
+        return text
+    return GRAPH_ID_PREFIX + text
+
+
+def _graph_attributes(raw) -> List[dict]:
+    """把 attributes 字典转换为知识库节点要求的 [{key, value}]，值统一为字符串。"""
+    if not isinstance(raw, dict):
+        return []
+    attributes = []
+    for key, value in raw.items():
+        if value is None:
+            value_text = ""
+        else:
+            value_text = _clean_text(str(value))
+        attributes.append({
+            "key": _clean_text(str(key)),
+            "value": value_text,
+        })
+    return attributes
+
+
+def _graph_node(record: dict, origin: str):
+    node_id = _graph_id(record.get("id"))
+    if not node_id:
+        return None
+    name = _graph_record_text(record.get("name"))
+    label = _graph_record_text(record.get("label")) or DEFAULT_ENTITY_LABEL
+    if not name:
+        name = label or node_id
+    return {
+        "id": node_id,
+        "name": name,
+        "label": label,
+        "x": 0,
+        "y": 0,
+        "parent_id": None,
+        "attributes": _graph_attributes(record.get("attributes")),
+        "origin": origin,
+    }
+
+
+def _graph_edge(record: dict, origin: str):
+    source = _graph_id(record.get("source"))
+    target = _graph_id(record.get("target"))
+    if not source or not target or source == target:
+        return None
+    raw_kind = _graph_record_text(record.get("kind")).strip().lower()
+    is_hierarchy = raw_kind == "hierarchy"
+    relation = _graph_record_text(record.get("relation")).strip()
+    if not relation:
+        relation = CONTAIN_RELATION if is_hierarchy else DEFAULT_RELATION
+    return {
+        "id": str(uuid.uuid4()),
+        "source": source,
+        "target": target,
+        "relation": relation,
+        "kind": "parent-child" if is_hierarchy else "relation",
+        "characteristics": [],
+        "weight": None if is_hierarchy else 1.0,
+        "origin": origin,
+    }
+
+
+def _is_graph_meta(record: dict) -> bool:
+    """meta 行判定：显式 record=meta，或仅声明 format 的兼容写法。"""
+    return (
+        record.get("record") == "meta"
+        or record.get("format") == GRAPH_FORMAT
+    )
+
+
+def _collect_graph_files(raw_records: List[dict]):
+    """扫描全部 meta 行，返回 (file_id→文件名, 文件顺序, 首个文件名)。
+
+    多文件项目的每个 meta 行都会提供自己的 file_id 与 file_name；
+    单个文件 id 对应首个声明的文件名，避免重复 meta 覆盖。
+    """
+    file_id_to_name: Dict[str, str] = {}
+    file_names: List[str] = []
+    first_file_name = ""
+
+    for record in raw_records:
+        if not _is_graph_meta(record):
+            continue
+        name = _graph_record_text(record.get("file_name")).strip()
+        if name:
+            if not first_file_name:
+                first_file_name = name
+            if name not in file_names:
+                file_names.append(name)
+
+        file_id = ""
+        for key in FILE_ID_KEYS:
+            candidate = _graph_record_text(record.get(key)).strip()
+            if candidate:
+                file_id = candidate
+                break
+        if file_id and name:
+            file_id_to_name.setdefault(file_id, name)
+
+    return file_id_to_name, file_names, first_file_name
+
+
+def _graph_node_file_id(raw_id) -> str:
+    """从节点 id 中提取文件段：lf:sec:f1:s0001 -> f1。"""
+    text = _graph_record_text(raw_id).strip()
+    if text.startswith(GRAPH_ID_PREFIX):
+        text = text[len(GRAPH_ID_PREFIX):]
+    match = _GRAPH_NODE_FILE_ID_RE.match(text)
+    return match.group(1) if match else ""
+
+
+def parse_graph_jsonl(
+    path: Union[str, Path], fallback_file_name: str = ""
+):
+    """解析 LabelFast graph.jsonl，返回 (nodes, edges, summary)。
+
+    节点保留导出侧显式 id（统一加 lf: 前缀），attributes 转为
+    [{key, value}]，边 kind 将 hierarchy 映射为 parent-child。
+    summary.preserve_ids=True，供前端按 id 去重而不是按 标签+名称 合并。
+
+    多文件项目会先扫描全部 meta 行建立 file_id -> file_name 映射，
+    再按节点 id 的文件段回填 origin；单文件项目仍使用首个 meta 的文件名。
+    """
+    text = _read_text(path)
+    warnings: List[str] = []
+    raw_records: List[dict] = []
+    total_lines = 0
+    bad_lines = 0
+
+    for line_no, line in enumerate(text.split("\n"), start=1):
+        line = line.rstrip("\r")
+        if not line.strip():
+            continue
+        total_lines += 1
+        try:
+            obj = _graph_line_json(line)
+        except (ValueError, RecursionError):
+            bad_lines += 1
+            if len(warnings) < MAX_WARNINGS:
+                warnings.append(f"第 {line_no} 行不是有效 JSON，已跳过")
+            continue
+        if not isinstance(obj, dict):
+            bad_lines += 1
+            if len(warnings) < MAX_WARNINGS:
+                warnings.append(f"第 {line_no} 行不是 JSON 对象，已跳过")
+            continue
+        raw_records.append(obj)
+
+    if total_lines == 0:
+        if len(warnings) < MAX_WARNINGS:
+            warnings.append("文件为空或没有任何非空行")
+    elif bad_lines == total_lines:
+        warnings.insert(0, "所有非空行均解析失败，疑似编码不匹配")
+        del warnings[MAX_WARNINGS:]
+
+    # 先扫描全部 meta 行，建立 file_id -> file_name，供多文件项目按
+    # 节点 id 的文件段回填各自的来源名。单文件项目行为保持不变。
+    file_id_to_name, meta_file_names, meta_file_name = _collect_graph_files(
+        raw_records
+    )
+    meta_format = ""
+    for record in raw_records:
+        if not _is_graph_meta(record):
+            continue
+        meta_format = _graph_record_text(record.get("format")).strip()
+        if meta_format:
+            break
+
+    file_name = meta_file_name
+    if not file_name:
+        file_name = _graph_record_text(fallback_file_name).strip()
+    if not file_name:
+        file_name = Path(path).name
+    default_origin = "labelfast:" + file_name
+
+    def _origin_for_node(raw_id) -> str:
+        """节点 id 的文件段命中 meta 映射时使用对应文件名，否则回退默认名。"""
+        file_id = _graph_node_file_id(raw_id)
+        mapped_name = file_id_to_name.get(file_id) if file_id else ""
+        if mapped_name:
+            return "labelfast:" + mapped_name
+        return default_origin
+
+    nodes = []
+    edges = []
+    labels: Dict[str, int] = {}
+    seen_node_ids = set()
+
+    for record_index, record in enumerate(raw_records):
+        record_type = record.get("record")
+        if record_type == "meta":
+            continue
+        if record_type == "node":
+            node = _graph_node(record, _origin_for_node(record.get("id")))
+            if node is None:
+                if len(warnings) < MAX_WARNINGS:
+                    warnings.append(
+                        f"第 {record_index + 1} 条记录：节点缺少 id，已跳过"
+                    )
+                continue
+            if node["id"] in seen_node_ids:
+                if len(warnings) < MAX_WARNINGS:
+                    warnings.append(
+                        f"第 {record_index + 1} 条记录：节点 id「{node['id']}」重复，已跳过"
+                    )
+                continue
+            seen_node_ids.add(node["id"])
+            nodes.append(node)
+            label = node["label"]
+            labels[label] = labels.get(label, 0) + 1
+        elif record_type == "edge":
+            edge = _graph_edge(
+                record, _origin_for_node(record.get("source"))
+            )
+            if edge is None:
+                if len(warnings) < MAX_WARNINGS:
+                    warnings.append(
+                        f"第 {record_index + 1} 条记录：边缺少端点或形成自环，已跳过"
+                    )
+                continue
+            edges.append(edge)
+        else:
+            if len(warnings) < MAX_WARNINGS:
+                warnings.append(
+                    f"第 {record_index + 1} 条记录：未知 record 类型，已跳过"
+                )
+
+    node_names = {node["id"]: node["name"] for node in nodes}
+    document_count = labels.get(FILE_LABEL, 0)
+    summary = {
+        "records": len(nodes) + len(edges),
+        "files": document_count or (1 if nodes else 0),
+        "entities": len(nodes),
+        "relations": len(edges),
+        "labels": dict(sorted(labels.items(), key=lambda item: item[1], reverse=True)),
+        "file_names": meta_file_names or ([file_name] if file_name else []),
+        "sample_nodes": [
+            {"id": node["id"], "name": node["name"], "label": node["label"]}
+            for node in nodes[:10]
+        ],
+        "sample_edges": [
+            {
+                "source": edge["source"],
+                "source_name": node_names.get(edge["source"], ""),
+                "target": edge["target"],
+                "target_name": node_names.get(edge["target"], ""),
+                "relation": edge["relation"],
+                "kind": edge["kind"],
+            }
+            for edge in edges[:10]
+        ],
+        "preserve_ids": True,
+        "format": meta_format or GRAPH_FORMAT,
+        "node_count": len(nodes),
+        "edge_count": len(edges),
+        "bad_lines": bad_lines,
+        "total_lines": total_lines,
+        "warnings": warnings,
+        "unresolved_relations": 0,
+        "mappings": {
+            "file": "meta.file_name",
+            "entities": "record=node",
+            "relations": "record=edge",
+        },
+    }
+    return nodes, edges, summary
 
 
 def _add_edge(edges, seen, source, target, relation, origin):

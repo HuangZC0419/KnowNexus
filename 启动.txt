@@ -1,0 +1,131 @@
+﻿OCR 项目 Windows 7 启动说明
+============================================
+
+一、一键启动（推荐）
+--------------------------------------------
+直接双击项目根目录下的：
+
+    start_win7.bat
+
+窗口出现 [OK] Ready: http://127.0.0.1:端口/ 后，浏览器会自动打开。
+注意使用窗口里显示的真实端口，不一定是 8000。
+关闭这个命令行窗口，程序即停止。
+
+只想检查环境、不启动服务时，可在命令行执行：
+
+    start_win7.bat --check
+
+不想自动打开浏览器时：
+
+    start_win7.bat --no-browser
+
+
+二、Python 环境放在哪里？（虚拟环境不必放在项目根目录）
+--------------------------------------------
+启动脚本会按以下顺序查找 python.exe：
+
+1. 项目根目录 win7-python.txt 中写的一行完整路径
+2. 项目内：      CF37v2\python.exe
+3. 项目旁边：    ..\CF37v2\python.exe
+4. 项目内 venv： venv\Scripts\python.exe 或 .venv\Scripts\python.exe
+5. 常见 Anaconda/Miniconda 路径下的 envs\CF37v2\python.exe
+   （C:\ProgramData、D:、E:\Anaconda、F: 等，详见 bat 内注释）
+
+最灵活的做法：
+把项目里的 win7-python.example.txt 复制一份，改名为
+
+    win7-python.txt
+
+用记事本打开，把里面的一行改成这台电脑上真实的 python.exe 路径，例如：
+
+    E:\Anaconda\envs\CF37v2\python.exe
+
+注意：
+- 只写一行；
+- 路径不要加双引号；
+- 记事本保存时选择 ANSI 或 UTF-8（不要带 BOM），否则路径会解析失败；
+- 换电脑后只需要改这个文件，不需要移动或复制整个环境。
+
+环境必须是 64 位 Python 3.7，并且已安装后端依赖
+（requirements-win7.txt / wheelhouse-win7 里的离线包）。
+
+
+三、完全手动启动（不使用 bat）
+--------------------------------------------
+以下命令都在 cmd.exe 中执行。
+把 ENV 换成你的环境目录（不是 python.exe 文件本身）。
+
+方式 1：单端口启动（推荐，和双击 bat 效果相同）
+--------------------------------------------
+    set "ENV=E:\Anaconda\envs\CF37v2"
+    set "PATH=%ENV%;%ENV%\Library\bin;%ENV%\Scripts;%PATH%"
+    set "PYTHONHOME="
+    set "PYTHONPATH="
+
+    cd /d H:\Git\1CF\OCR_benti-main_win7\OCR_benti-main_win7
+    "%ENV%\python.exe" -B scripts\win7_launcher.py
+
+启动器会先检查环境，再自动选择 8000-8100 之间的空闲端口，
+就绪后自动打开浏览器。窗口里会显示实际地址。
+
+方式 2：直接用 uvicorn 启动（固定端口 8000）
+--------------------------------------------
+    set "ENV=E:\Anaconda\envs\CF37v2"
+    set "PATH=%ENV%;%ENV%\Library\bin;%ENV%\Scripts;%PATH%"
+    set "PYTHONHOME="
+    set "PYTHONPATH="
+
+    cd /d H:\Git\1CF\OCR_benti-main_win7\OCR_benti-main_win7\backend
+    "%ENV%\python.exe" -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+
+然后用浏览器打开：
+
+    http://127.0.0.1:8000/
+
+端口被占用时，把 --port 8000 改成 8001 或其他空闲端口，
+浏览器地址也要跟着改。
+
+方式 3：用 conda 激活环境（需要已安装 Anaconda/Miniconda）
+--------------------------------------------
+    call conda activate CF37v2
+
+    cd /d H:\Git\1CF\OCR_benti-main_win7\OCR_benti-main_win7\backend
+    python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+
+三种方式只需要选一种，启动后保持窗口打开，按 Ctrl+C 停止。
+
+
+四、必须知道的几点
+--------------------------------------------
+- 前端已经提前构建在 frontend\dist，由后端用同一个端口提供。
+  Win7 上不需要 Node.js、npm 或 Vite。
+- 不要直接双击 frontend\dist\index.html，这样打开没有接口。
+- 不要用项目里旧的 dist\OCR-Benti.exe，它对应旧版代码。
+- 后端的 API 文档：http://127.0.0.1:端口/docs
+- 登录账号在 backend\users.xlsx 中维护。
+
+
+五、常见问题
+--------------------------------------------
+1. 提示 No Python runtime was found
+   → 新建 win7-python.txt，写入真实的 python.exe 路径。
+
+2. 提示 uvicorn cannot be imported
+   → 该环境缺少后端依赖，用离线包修复：
+     "%ENV%\python.exe" scripts\prepare_win7.py --install-offline
+
+3. DLL load failed、找不到 VCRUNTIME140.dll / MSVCP140.dll
+   → 安装 prerequisites\VC_redist.x64.exe；
+     手动启动时确认 PATH 中包含 ENV 和 ENV\Library\bin。
+
+4. 端口被占用
+   → 用方式 1（启动器）会自动换端口；
+     用方式 2 时换一个 --port。
+
+5. 网页显示“网络错误”或登录失败
+   → 先访问 http://127.0.0.1:端口/api/projects，
+     能返回 JSON 说明后端正常，再检查浏览器地址和登录账号。
+
+6. 开发模式（仅限 Windows 10/11）
+   → 双击 start.bat 会启动 Vite 前端（需要 Node 18+）。
+     Windows 7 不要使用 start.bat，请使用 start_win7.bat。

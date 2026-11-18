@@ -43,6 +43,7 @@ const sourceTypeStyleMap = {
   dameng: { label: "达梦", color: "#7c3aed", fill: "#7c3aed", bg: "#f5f3ff", border: "#c4b5fd" },
   excel: { label: "Excel", color: "#059669", fill: "#059669", bg: "#ecfdf5", border: "#a7f3d0" },
   csv: { label: "CSV", color: "#d97706", fill: "#ea580c", bg: "#fff7ed", border: "#fdba74" },
+  jsonl: { label: "JSONL 标注数据", color: "#0891b2", fill: "#0891b2", bg: "#ecfeff", border: "#a5f3fc" },
   manual: { label: "人工维护", color: "#64748b", fill: "#64748b", bg: "#f1f5f9", border: "#cbd5e1" },
 };
 
@@ -92,6 +93,7 @@ const sourceGroups = computed(() => {
     { type: "dameng", sources: [] },
     { type: "excel", sources: [] },
     { type: "csv", sources: [] },
+    { type: "jsonl", sources: [] },
     { type: "manual", sources: [] },
   ];
   for (const src of sources) {
@@ -122,6 +124,13 @@ const sourceGroups = computed(() => {
 
   return groups.filter((g) => g.sources.length > 0);
 });
+
+// 仅当确实存在 jsonl 数据源时补充图例，不改变其他来源的既有展示
+const hasJsonlSource = computed(() =>
+  (data.value?.data_sources || []).some(
+    (src) => (src.type || "").toLowerCase() === "jsonl"
+  )
+);
 
 const COLLAPSE_LIMIT = 8;
 const expandedSources = ref(new Set());
@@ -498,6 +507,9 @@ function getVerticalCurve(x1, y1, x2, y2) {
             <span class="lv-legend-item">
               <span class="lv-legend-dot" style="background:#ea580c"></span>CSV
             </span>
+            <span v-if="hasJsonlSource" class="lv-legend-item">
+              <span class="lv-legend-dot" style="background:#0891b2"></span>JSONL
+            </span>
             <span v-if="data.summary.manual_node_names?.length" class="lv-legend-item">
               <span class="lv-legend-dot" style="background:#64748b"></span>人工维护
             </span>
@@ -635,9 +647,11 @@ function getVerticalCurve(x1, y1, x2, y2) {
 .leader-view {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 20px 28px;
   background: #f8fafc;
   min-width: 0;
+  max-width: 100%;
 }
 
 .leader-view::-webkit-scrollbar {
@@ -723,12 +737,16 @@ function getVerticalCurve(x1, y1, x2, y2) {
   flex-direction: column;
   gap: 24px;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .lv-section {
   display: flex;
   flex-direction: column;
   gap: 18px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .lv-section-header {
@@ -984,10 +1002,14 @@ function getVerticalCurve(x1, y1, x2, y2) {
   border-radius: 12px;
   background: #ffffff;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
-  overflow-x: auto;
-  overflow-y: hidden;
-  padding: 14px 14px 0 14px;
+  /* 内容多时在容器内部双向滚动，滚动条始终留在视口内，
+     避免 SVG 向右无限延展后被父级裁掉。 */
+  overflow: auto;
+  max-width: 100%;
+  max-height: min(70vh, 720px);
+  padding: 14px 14px 8px 14px;
   width: 100%;
+  min-width: 0;
   box-sizing: border-box;
 }
 
@@ -1005,7 +1027,8 @@ function getVerticalCurve(x1, y1, x2, y2) {
 .lv-svg {
   display: block;
   /* width and height are defined inline to prevent scaling up */
-  margin: 0 auto;
+  margin: 0;
+  flex: none;
 }
 
 .svg-expand-btn {

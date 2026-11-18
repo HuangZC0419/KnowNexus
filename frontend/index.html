@@ -4,10 +4,28 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>装配工艺知识库软件</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
   </head>
   <body>
     <div id="app"></div>
+    <div id="browser-compatibility-notice" style="display:none; max-width:640px; margin:60px auto; padding:24px; font:16px/1.8 Arial,sans-serif; color:#1e293b;">
+      <h1 style="font-size:24px;">当前浏览器缺少运行此网页所需的功能</h1>
+      <p>如果浏览器有“兼容模式 / 极速模式”选项，请切换到极速模式后刷新；也可以使用支持现代网页的浏览器打开启动窗口中的地址。</p>
+      <p>这个提示是浏览器功能检测结果，不能据此判断后端是否启动。</p>
+      <p><a href="/connection-check.html">打开连接检测</a></p>
+    </div>
+    <script>
+      (function () {
+        var script = document.createElement("script");
+        var supported = "noModule" in script &&
+          typeof window.Promise === "function" &&
+          typeof window.Proxy === "function" &&
+          typeof window.fetch === "function";
+        if (!supported) {
+          document.getElementById("app").style.display = "none";
+          document.getElementById("browser-compatibility-notice").style.display = "block";
+        }
+      }());
+    </script>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

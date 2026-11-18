@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import List
+
 import sqlite3
 
 from pathlib import Path
@@ -47,7 +49,7 @@ class SimDamengConnector(DataSourceConnector):
         except Exception:
             return False
 
-    async def get_tables(self) -> list[TableInfo]:
+    async def get_tables(self) -> List[TableInfo]:
         if not self._conn:
             return []
         rows = self._conn.execute(
@@ -64,7 +66,7 @@ class SimDamengConnector(DataSourceConnector):
             for r in rows
         ]
 
-    async def get_columns(self, table: str, schema: str = "") -> list[ColumnInfo]:
+    async def get_columns(self, table: str, schema: str = "") -> List[ColumnInfo]:
         if not self._conn:
             return []
         schema = schema or self._current_schema
@@ -84,7 +86,7 @@ class SimDamengConnector(DataSourceConnector):
             for r in rows
         ]
 
-    async def preview_data(self, table: str, schema: str = "", limit: int = 10) -> list[dict]:
+    async def preview_data(self, table: str, schema: str = "", limit: int = 10) -> List[dict]:
         if not self._conn:
             return []
         schema = schema or self._current_schema
@@ -143,7 +145,7 @@ class DamengConnector(DataSourceConnector):
         except Exception:
             return False
 
-    async def get_tables(self) -> list[TableInfo]:
+    async def get_tables(self) -> List[TableInfo]:
         if not self._conn:
             return []
         cursor = self._conn.cursor()
@@ -158,7 +160,7 @@ class DamengConnector(DataSourceConnector):
             for r in rows
         ]
 
-    async def get_columns(self, table: str, schema: str = "") -> list[ColumnInfo]:
+    async def get_columns(self, table: str, schema: str = "") -> List[ColumnInfo]:
         if not self._conn:
             return []
         schema = schema or self._current_schema
@@ -188,7 +190,7 @@ class DamengConnector(DataSourceConnector):
             for r in rows
         ]
 
-    async def preview_data(self, table: str, schema: str = "", limit: int = 10) -> list[dict]:
+    async def preview_data(self, table: str, schema: str = "", limit: int = 10) -> List[dict]:
         if not self._conn:
             return []
         schema = schema or self._current_schema

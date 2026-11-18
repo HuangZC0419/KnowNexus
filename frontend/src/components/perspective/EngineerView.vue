@@ -75,6 +75,7 @@ const SOURCE_STYLES = {
   dameng: { bg: '#EDE9FE', text: '#7C3AED', label: '达梦', badge: '#A78BFA' },
   excel: { bg: '#DCFCE7', text: '#16A34A', label: 'Excel', badge: '#4ADE80' },
   csv: { bg: '#FFF7ED', text: '#EA580C', label: 'CSV', badge: '#FB923C' },
+  jsonl: { bg: '#CFFAFE', text: '#0E7490', label: 'JSONL', badge: '#67E8F9' },
   manual: { bg: '#F1F5F9', text: '#64748B', label: '人工维护', badge: '#94A3B8' }
 }
 
@@ -556,7 +557,8 @@ function onSvgWheel(event) {
   var zoomSensitivity = 0.001
   var delta = -event.deltaY * zoomSensitivity
   var newScale = viewTransform.scale * (1 + delta)
-  newScale = Math.max(0.1, Math.min(newScale, 5))
+  // 内容较多时初始视图会被缩得很小，允许放大到 50 倍以便看清文字。
+  newScale = Math.max(0.1, Math.min(newScale, 50))
 
   var scale = getSVGScale()
   var mouseXSvg = (event.clientX - scale.e) / scale.x
@@ -569,7 +571,7 @@ function onSvgWheel(event) {
 
 // 与 App.vue 完全相同的缩放控件方法
 function zoomIn() {
-  viewTransform.scale = Math.min(viewTransform.scale * 1.2, 5)
+  viewTransform.scale = Math.min(viewTransform.scale * 1.2, 50)
 }
 
 function zoomOut() {

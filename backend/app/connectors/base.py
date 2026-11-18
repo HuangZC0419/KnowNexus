@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import List
+
 from abc import ABC, abstractmethod
 from app.models import TableInfo, ColumnInfo
 
@@ -25,16 +27,16 @@ class DataSourceConnector(ABC):
         ...
 
     @abstractmethod
-    async def get_tables(self) -> list[TableInfo]:
+    async def get_tables(self) -> List[TableInfo]:
         """获取所有表/Sheet/文件列表"""
         ...
 
     @abstractmethod
-    async def get_columns(self, table: str, schema: str = "") -> list[ColumnInfo]:
+    async def get_columns(self, table: str, schema: str = "") -> List[ColumnInfo]:
         """获取指定表的列信息"""
         ...
 
     @abstractmethod
-    async def preview_data(self, table: str, schema: str = "", limit: int = 10) -> list[dict]:
+    async def preview_data(self, table: str, schema: str = "", limit: int = 10) -> List[dict]:
         """预览表的前N行数据"""
         ...

@@ -811,6 +811,40 @@ async function switchProject(id) {
   statusMessage.value = "已切换项目";
 }
 
+// 混合标注导入完成：刷新项目列表 → 选中新项目并加载画布 → 切到知识建模视角
+// 复用 loadProjects / switchProject（后者内部已调用 loadGraph），避免重复实现加载逻辑
+async function onMixedImported(result) {
+  if (!result || !result.project_id) {
+    statusMessage.value = "混合标注导入完成，但未返回项目信息";
+    return;
+  }
+
+  try {
+    await loadProjects();
+
+    // 优先使用列表中该项目的原始 id（保持后端返回的类型一致）；
+    // 若列表暂未包含，则补一条兜底项，保证能选中并打开画布
+    let target = projects.value.find(
+      (p) => String(p.id) === String(result.project_id)
+    );
+    if (!target) {
+      target = { id: result.project_id, name: result.project_name || "混合标注项目" };
+      projects.value = [...projects.value, target];
+    }
+
+    await switchProject(target.id);
+    currentPerspective.value = "process";
+
+    const nodeCount = Number.isFinite(result.node_count) ? result.node_count : 0;
+    const edgeCount = Number.isFinite(result.edge_count) ? result.edge_count : 0;
+    statusMessage.value =
+      `已导入混合标注项目「${result.project_name || result.project_id}」：` +
+      `${nodeCount} 个概念 / ${edgeCount} 条关系`;
+  } catch (error) {
+    statusMessage.value = `导入后打开项目失败：${error.message}`;
+  }
+}
+
 async function createProject() {
   try {
     const name = await customPrompt("新建项目", "", "输入项目名称");
@@ -1738,8 +1772,59 @@ function onImportNodes(importedNodes, importedEdges, importedInfRules, importedM
   let nodesToAdd = importedNodes;
   let edgesToAdd = importedEdges || [];
 
-  // 合并模式（JSONL）：按 标签+名称 去重，重复实体复用已有节点，避免重复导入产生孤岛
-  if (options.merge) {
+  // graph.jsonl（preserve_ids）导入：按显式 id 去重并保留原 id，
+  // 不再按 标签+名称 合并，避免 document/section/paragraph 等同名节点被错误合并。
+  const preserveIds =
+    options.preserve_ids === true ||
+    (options.summary && options.summary.preserve_ids === true) ||
+    importedNodes.every(
+      (node) => typeof node.id === "string" && node.id.startsWith("lf:")
+    );
+
+  if (options.merge && preserveIds) {
+    const existingIds = new Set(nodes.value.map((node) => node.id));
+    const idMap = new Map();
+    const merged = [];
+    const addedIds = new Set();
+
+    for (const node of importedNodes) {
+      const nodeId = node.id || `${node.label || ""}::${node.name || ""}`;
+      idMap.set(node.id, nodeId);
+      if (!nodeId || existingIds.has(nodeId) || addedIds.has(nodeId)) continue;
+      addedIds.add(nodeId);
+      merged.push(node);
+    }
+
+    // 关系端点保持显式 id；剔除自环与画布上已存在的重复边
+    edgesToAdd = edgesToAdd
+      .map((edge) => ({
+        ...edge,
+        source: idMap.get(edge.source) || edge.source,
+        target: idMap.get(edge.target) || edge.target,
+      }))
+      .filter((edge) => edge.source !== edge.target);
+
+    const seenEdges = new Set(
+      edges.value.map((edge) => `${edge.source}|${edge.target}|${edge.relation}`)
+    );
+    edgesToAdd = edgesToAdd.filter((edge) => {
+      const key = `${edge.source}|${edge.target}|${edge.relation}`;
+      if (seenEdges.has(key)) return false;
+      seenEdges.add(key);
+      return true;
+    });
+
+    // 平移布局保持不变：新节点整体右移，避免与画布上已有节点重叠
+    if (nodes.value.length > 0 && merged.length > 0) {
+      const maxX = nodes.value.reduce((max, node) => Math.max(max, node.x), -Infinity);
+      const offsetX = maxX + 320;
+      merged.forEach((node) => {
+        node.x += offsetX;
+      });
+    }
+    nodesToAdd = merged;
+  } else if (options.merge) {
+    // 合并模式（旧 JSONL）：按 标签+名称 去重，重复实体复用已有节点，避免重复导入产生孤岛
     const keyOf = (node) => `${node.label || ""}::${node.name || ""}`;
     const existingByKey = new Map(nodes.value.map((node) => [keyOf(node), node]));
     const idMap = new Map();
@@ -1961,7 +2046,11 @@ onUnmounted(() => {
 
           <div v-if="activeWorkbenchTab === 'import'" class="workbench-panel">
             <div class="workbench-section">
-              <DataSourcePanel v-if="isManager" @import-nodes="onImportNodes" />
+              <DataSourcePanel
+                v-if="isManager"
+                @import-nodes="onImportNodes"
+                @mixed-imported="onMixedImported"
+              />
               <div v-else class="tip-text">仅管理者可导入数据</div>
 
               <!-- OCR 图片识别导入 -->
@@ -2123,7 +2212,7 @@ onUnmounted(() => {
     <!-- 主内容区：视角Tab栏 + 视角视图 + 画布 -->
     <div class="main-content-wrapper">
       <!-- 多视角切换 Tab -->
-      <PerspectiveTabs :projectId="currentProjectId" @change="onPerspectiveChange" />
+      <PerspectiveTabs v-model="currentPerspective" :projectId="currentProjectId" @change="onPerspectiveChange" />
 
       <!-- 视角内容区（领导/工程师视角，替换画布区域），带 fade 过渡 -->
       <Transition
@@ -2768,7 +2857,6 @@ onUnmounted(() => {
           <div class="node-body">
             <div class="node-meta">
               <span v-if="node.label" class="node-label" :style="labelStyle(node.label)" :title="node.label">{{ node.label }}</span>
-              <span class="node-id" :title="'ID: ' + node.id">ID: {{ node.id.slice(0, 6) }}</span>
             </div>
           </div>
 
@@ -2855,7 +2943,25 @@ onUnmounted(() => {
             </div>
             <div class="attr-list">
               <div v-for="(attr, idx) in selectedNode.attributes" :key="idx" class="attr-item">
-                <input type="text" v-model="attr.key" @change="updateAttribute" placeholder="属性名" :disabled="!isManager" />
+                <input
+                  type="text"
+                  class="attr-key-input"
+                  v-model="attr.key"
+                  @change="updateAttribute"
+                  placeholder="属性名"
+                  :title="attr.key"
+                  :disabled="!isManager"
+                />
+                <input
+                  type="text"
+                  class="attr-value-input"
+                  v-model="attr.value"
+                  @change="updateAttribute"
+                  placeholder="属性值"
+                  :title="attr.value"
+                  spellcheck="false"
+                  :disabled="!isManager"
+                />
                 <button v-if="isManager" class="remove-btn" @click="removeAttribute(idx)">×</button>
               </div>
               <div v-if="!selectedNode.attributes?.length" class="empty-tip">暂无属性</div>
@@ -4978,17 +5084,51 @@ onUnmounted(() => {
 
 .attr-item {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
 }
 
 .attr-item input {
-  flex: 1;
-  min-width: 0;
+  box-sizing: border-box;
+  width: auto;
   padding: 8px 10px;
   border: 1px solid #e2e8f0;
   border-radius: 6px;
   font-size: 13px;
+  color: #1e293b;
+  background: #ffffff;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.attr-item input:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+}
+
+.attr-item input:disabled {
+  background: #f8fafc;
+  color: #475569;
+  cursor: not-allowed;
+  -webkit-text-fill-color: #475569;
+  opacity: 1;
+}
+
+/* 属性名固定占约 40%，属性值吃掉剩余宽度；窄面板时自动换行，最小宽度保证可读 */
+.attr-item .attr-key-input {
+  flex: 0 1 40%;
+  min-width: 96px;
+}
+
+.attr-item .attr-value-input {
+  flex: 1 1 140px;
+  min-width: 140px;
+}
+
+.attr-item .remove-btn {
+  flex: 0 0 24px;
+  margin-left: auto;
 }
 
 .add-btn, .remove-btn {

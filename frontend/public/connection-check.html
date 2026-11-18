@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>离线连接检测</title>
+  <style>
+    body { margin: 28px auto; padding: 0 18px; max-width: 860px; color: #243444; background: #f5f7fa; font: 16px/1.7 Arial, "Microsoft YaHei", sans-serif; }
+    h1 { font-size: 26px; }
+    .panel { background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 18px; margin: 16px 0; }
+    .value { word-wrap: break-word; font-family: Consolas, monospace; font-size: 14px; }
+    button { padding: 9px 18px; margin: 4px 8px 4px 0; cursor: pointer; font-size: 16px; }
+    textarea { box-sizing: border-box; width: 100%; height: 360px; padding: 12px; background: #f8fafc; color: #172b42; font: 14px/1.6 Consolas, "Microsoft YaHei", monospace; }
+    #notice { font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>离线连接检测</h1>
+  <p>本页只检查接口和浏览器能力，不发送真实账号密码，不创建登录会话。报告只保留项目数量，不展示项目内容。</p>
+  <div class="panel">
+    <div>当前地址：<div id="address" class="value"></div></div>
+    <div>浏览器：<div id="agent" class="value"></div></div>
+    <p id="notice"></p>
+    <button id="run" type="button">运行检测</button>
+    <button id="copy" type="button">复制报告</button>
+    <span id="copy-status"></span>
+  </div>
+  <div class="panel">
+    <label for="report">纯文本检测报告（可全选复制）：</label>
+    <textarea id="report" readonly="readonly"></textarea>
+  </div>
+  <p>请保留启动 BAT 的黑色窗口，从同一电脑的浏览器访问 <span class="value">http://127.0.0.1:8000/connection-check.html</span>。若改过服务端口，请使用实际端口。</p>
+  <p>简单静态 HTTP 检查：在同一浏览器打开 <span class="value">http://127.0.0.1:8000/help.html</span>。能显示帮助页说明静态文件可访问；仍需运行上方检测，确认 API 是否可用。</p>
+  <script>
+    (function () {
+      'use strict';
+      var report = document.getElementById('report');
+      var run = document.getElementById('run');
+      var notice = document.getElementById('notice');
+      var hasFetch = typeof window.fetch === 'function';
+      var hasModule = 'noModule' in document.createElement('script');
+      var isHttp = location.protocol === 'http:' || location.protocol === 'https:';
+      var results = [];
+      var pending = 0;
+      var passed = 0;
+      function setText(id, text) {
+        document.getElementById(id).appendChild(document.createTextNode(text));
+      }
+      function render() {
+        var lines = ['离线连接检测报告', '地址：' + location.href, '浏览器：' + navigator.userAgent,
+          'HTTP/HTTPS 打开：' + (isHttp ? '是' : '否'),
+          'fetch：' + (hasFetch ? '支持' : '缺少'),
+          'ES module：' + (hasModule ? '支持（能力检测）' : '未检测到支持')];
+        report.value = lines.concat(results).join('\r\n');
+      }
+      function finish(index, message, ok) {
+        results[index] = message;
+        if (ok) { passed += 1; }
+        pending -= 1;
+        if (pending === 0) {
+          run.disabled = false;
+          if (passed === 2) {
+            results.push('结果：项目接口和登录参数校验接口均可用，后端能够响应。');
+            if (!hasFetch) { results.push('浏览器缺少 fetch，主页面可能存在浏览器兼容问题。'); }
+            if (!hasModule) { results.push('未检测到 ES module 支持，主页面脚本可能无法加载。'); }
+            results.push('这不能单独确定登录失败的最终原因，还需结合主页面错误和服务日志。');
+          } else {
+            results.push('结果：接口检测未全部通过；请结合状态、浏览器地址和服务日志继续排查，尚不能确定最终原因。');
+          }
+        }
+        render();
+      }
+      function request(index, method, path) {
+        var xhr = new XMLHttpRequest();
+        var done = false;
+        var label = method + ' ' + path + '：';
+        function end(message, ok) {
+          if (done) { return; }
+          done = true;
+          finish(index, label + message, ok);
+        }
+        xhr.onload = function () {
+          var data;
+          try { data = JSON.parse(xhr.responseText); }
+          catch (error) { end('HTTP ' + xhr.status + '，响应不是有效 JSON。', false); return; }
+          if (index === 0 && xhr.status === 200 && Object.prototype.toString.call(data) === '[object Array]') {
+            end('通过，HTTP 200，JSON 数组，项目数量 ' + data.length + '。', true);
+          } else if (index === 1 && xhr.status === 422 && data && Object.prototype.hasOwnProperty.call(data, 'detail')) {
+            end('通过，HTTP 422，返回 JSON detail（空参数校验正常）。', true);
+          } else {
+            end('HTTP ' + xhr.status + '，JSON 已返回，但状态或数据结构不符合预期。', false);
+          }
+        };
+        xhr.onerror = function () { end('网络错误，未取得可用 HTTP 响应。', false); };
+        xhr.ontimeout = function () { end('请求超时（8 秒）。', false); };
+        xhr.onabort = function () { end('请求被取消。', false); };
+        try {
+          xhr.open(method, path, true);
+          xhr.timeout = 8000;
+          if (method === 'POST') { xhr.setRequestHeader('Content-Type', 'application/json'); }
+          xhr.send(method === 'POST' ? '{}' : null);
+        } catch (error) { end('无法发起请求，请检查浏览器和打开方式。', false); }
+      }
+      setText('address', location.href);
+      setText('agent', navigator.userAgent);
+      notice.appendChild(document.createTextNode(isHttp ? '请点击“运行检测”，每个请求最多等待 8 秒。' : '请通过 HTTP 地址打开本页；直接双击 HTML 文件不能检测服务。'));
+      run.disabled = !isHttp || typeof XMLHttpRequest === 'undefined';
+      run.onclick = function () {
+        run.disabled = true;
+        results = ['GET /api/projects：检测中……', 'POST /api/auth/login：检测中……'];
+        pending = 2;
+        passed = 0;
+        render();
+        request(0, 'GET', '/api/projects');
+        request(1, 'POST', '/api/auth/login');
+      };
+      document.getElementById('copy').onclick = function () {
+        var copied = false;
+        report.focus();
+        report.select();
+        try { copied = document.execCommand('copy'); } catch (error) { copied = false; }
+        document.getElementById('copy-status').innerHTML = copied ? '已复制' : '已选中报告，请按 Ctrl+C 复制';
+      };
+      render();
+    }());
+  </script>
+</body>
+</html>

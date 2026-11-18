@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Dict, List
+
 import csv
 import os
 
@@ -17,8 +19,8 @@ class FileParserConnector(DataSourceConnector):
     """解析上传的 Excel/CSV 文件，提取 Sheet/列结构"""
 
     def __init__(self):
-        self._tables: list[TableInfo] = []
-        self._columns: dict[str, list[ColumnInfo]] = {}
+        self._tables: List[TableInfo] = []
+        self._columns: Dict[str, List[ColumnInfo]] = {}
         self._file_path: str = ""
         self._file_type: str = ""
 
@@ -46,13 +48,13 @@ class FileParserConnector(DataSourceConnector):
         path = config.get("file_path", "")
         return os.path.isfile(path)
 
-    async def get_tables(self) -> list[TableInfo]:
+    async def get_tables(self) -> List[TableInfo]:
         return self._tables
 
-    async def get_columns(self, table: str, schema: str = "") -> list[ColumnInfo]:
+    async def get_columns(self, table: str, schema: str = "") -> List[ColumnInfo]:
         return self._columns.get(table, [])
 
-    async def preview_data(self, table: str, schema: str = "", limit: int = 10) -> list[dict]:
+    async def preview_data(self, table: str, schema: str = "", limit: int = 10) -> List[dict]:
         if self._file_type == ".csv":
             return await self._preview_csv(limit)
         elif self._file_type in (".xlsx", ".xls"):
@@ -171,7 +173,7 @@ class FileParserConnector(DataSourceConnector):
             self._columns[ws.name] = columns
         return True
 
-    async def _preview_excel(self, sheet: str, limit: int) -> list[dict]:
+    async def _preview_excel(self, sheet: str, limit: int) -> List[dict]:
         try:
             import openpyxl
             wb = openpyxl.load_workbook(self._file_path, read_only=True, data_only=True)
@@ -272,7 +274,7 @@ class FileParserConnector(DataSourceConnector):
         self._columns[file_name] = columns
         return True
 
-    async def _preview_csv(self, limit: int) -> list[dict]:
+    async def _preview_csv(self, limit: int) -> List[dict]:
         try:
             import chardet
         except ImportError:

@@ -17,30 +17,59 @@ async function handleLogin() {
     return;
   }
   loading.value = true;
+  let data;
   try {
-    const res = await fetch("/api/auth/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        username: username.value.trim(),
-        password: password.value,
-      }),
-    });
-    const data = await res.json();
-    if (data.success) {
-      emit("login-success", {
-        token: data.token,
-        username: data.username,
-        name: data.name,
-        role: data.role,
+    if (!/^https?:$/.test(window.location.protocol)) {
+      throw new Error("请使用启动窗口显示的 http://127.0.0.1:端口/ 地址打开系统，再登录。");
+    }
+    if (typeof window.fetch !== "function") {
+      throw new Error("当前浏览器不支持登录所需功能，请使用 Chrome 109 或兼容的浏览器极速模式。");
+    }
+    let res;
+    try {
+      res = await window.fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: username.value.trim(),
+          password: password.value,
+        }),
       });
-    } else {
-      loginError.value = data.message || "登录失败";
+    } catch (error) {
+      throw new Error("无法连接登录接口。请保持启动窗口打开，确认浏览器地址和窗口中的地址一致，并打开下方连接检测。");
+    }
+    if (!res.ok) {
+      if (res.status >= 500) {
+        throw new Error(`登录服务处理失败（HTTP ${res.status}），请查看启动窗口中的报错。`);
+      }
+      if (res.status === 404) {
+        throw new Error("当前地址没有找到登录接口（HTTP 404），请使用启动窗口显示的地址。");
+      }
+      throw new Error(`登录请求被拒绝（HTTP ${res.status}），请打开下方连接检测。`);
+    }
+    try {
+      data = await res.json();
+    } catch (error) {
+      throw new Error(`登录接口返回内容异常（HTTP ${res.status}），请打开下方连接检测。`);
+    }
+    if (!data || typeof data.success !== "boolean") {
+      throw new Error("登录接口返回的内容与当前页面不匹配，请刷新页面并打开下方连接检测。");
     }
   } catch (e) {
-    loginError.value = "网络错误，请确认后端服务已启动";
+    loginError.value = e.message || "登录失败，请打开下方连接检测。";
+    return;
   } finally {
     loading.value = false;
+  }
+  if (data.success) {
+    emit("login-success", {
+      token: data.token,
+      username: data.username,
+      name: data.name,
+      role: data.role,
+    });
+  } else {
+    loginError.value = data.message || "登录失败";
   }
 }
 </script>
@@ -153,7 +182,10 @@ async function handleLogin() {
                 <path d="M13 6l6 6-6 6"/>
               </svg>
             </button>
-            <p v-if="loginError" class="modern-login-error">{{ loginError }}</p>
+            <p v-if="loginError" class="modern-login-error">
+              {{ loginError }}
+              <a href="/connection-check.html" target="_blank" rel="noopener">连接检测</a>
+            </p>
           </form>
 
           <div class="modern-status">

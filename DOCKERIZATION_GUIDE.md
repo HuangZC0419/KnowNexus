@@ -458,7 +458,7 @@ sudo firewall-cmd --reload
 提交前确认：
 
 - [ ] `.gitignore` 包含 `*.tar`（排除大型镜像文件）
-- [ ] `.gitignore` 包含 `.superpowers/`（排除会话数据）
+- [ ] `.gitignore` 已排除本地 AI 助手配置与构建产物
 - [ ] `docker-compose.offline.yml` 已添加
 - [ ] `Dockerfile` 已移除 `# syntax=docker/dockerfile:1`（国内无法拉取）
 - [ ] `requirements.txt` 所有包已锁定版本号

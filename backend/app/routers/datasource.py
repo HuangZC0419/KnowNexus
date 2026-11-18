@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Dict
+
 import json
 import os
 import uuid
@@ -13,7 +15,12 @@ from starlette.concurrency import run_in_threadpool
 from app.models import ImportSelection, JsonlImportSelection
 from app.connectors.dameng import SimDamengConnector, DamengConnector
 from app.connectors.file_parser import FileParserConnector
-from app.services.jsonl_import import build_graph, parse_jsonl
+from app.services.jsonl_import import (
+    build_graph,
+    is_graph_jsonl,
+    parse_graph_jsonl,
+    parse_jsonl,
+)
 from app.services.ontology_extract import extract_ontology_nodes, extract_ontology_from_data
 
 router = APIRouter(prefix="/api/datasource")
@@ -21,7 +28,15 @@ router = APIRouter(prefix="/api/datasource")
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 
-_sessions: dict[str, tuple] = {}
+_sessions: Dict[str, tuple] = {}
+
+
+def _unlink_if_exists(path: Path) -> None:
+    """Python 3.7 equivalent of Path.unlink(missing_ok=True)."""
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
 
 
 def _ensure_upload_dir():
@@ -60,6 +75,25 @@ MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 MAX_JSONL_RECORDS = 50000
 MAX_GRAPH_NODES = 50000
 MAX_GRAPH_EDGES = 100000
+
+
+def _jsonl_limit_message(node_count: int, edge_count: int, records: int) -> str:
+    """统一的 JSONL 规模限制提示；未超限返回空串。"""
+    if records > MAX_JSONL_RECORDS:
+        return f"JSONL 记录过多，最多支持 {MAX_JSONL_RECORDS} 条"
+    if node_count > MAX_GRAPH_NODES or edge_count > MAX_GRAPH_EDGES:
+        return "导入数据规模过大，请拆分文件后重试"
+    return ""
+
+
+def _discard_upload(file_id: str, save_path: Path) -> None:
+    """上传后解析失败或超限时清理临时文件与元数据。"""
+    try:
+        _unlink_if_exists(save_path)
+        _unlink_if_exists(_upload_meta_path(file_id))
+    except OSError:
+        pass
+
 
 
 def _validate_file_id(source_id: str) -> str:
@@ -190,14 +224,30 @@ async def upload_file(file: UploadFile = File(...)):
     _save_upload_meta(file_id, display_name, ext)
 
     if ext == ".jsonl":
+        # LabelFast graph.jsonl 使用显式 id 与独立节点/边记录，优先走新解析器。
+        if await run_in_threadpool(is_graph_jsonl, save_path):
+            nodes, edges, summary = await run_in_threadpool(
+                parse_graph_jsonl, save_path, display_name
+            )
+            limit_message = _jsonl_limit_message(
+                len(nodes), len(edges), summary.get("records", 0)
+            )
+            if limit_message:
+                _discard_upload(file_id, save_path)
+                raise HTTPException(413, limit_message)
+            return {
+                "file_id": file_id,
+                "file_name": display_name,
+                "file_type": ext,
+                "jsonl_summary": summary,
+            }
+
         result = await run_in_threadpool(parse_jsonl, save_path, display_name)
         if len(result.records) > MAX_JSONL_RECORDS:
-            try:
-                save_path.unlink(missing_ok=True)
-                _upload_meta_path(file_id).unlink(missing_ok=True)
-            except OSError:
-                pass
-            raise HTTPException(413, f"JSONL 记录过多，最多支持 {MAX_JSONL_RECORDS} 条")
+            _discard_upload(file_id, save_path)
+            raise HTTPException(
+                413, f"JSONL 记录过多，最多支持 {MAX_JSONL_RECORDS} 条"
+            )
         nodes, edges, summary = await run_in_threadpool(
             build_graph,
             result.records,
@@ -205,11 +255,7 @@ async def upload_file(file: UploadFile = File(...)):
             display_name,
         )
         if len(nodes) > MAX_GRAPH_NODES or len(edges) > MAX_GRAPH_EDGES:
-            try:
-                save_path.unlink(missing_ok=True)
-                _upload_meta_path(file_id).unlink(missing_ok=True)
-            except OSError:
-                pass
+            _discard_upload(file_id, save_path)
             raise HTTPException(413, "导入数据规模过大，请拆分文件后重试")
         summary["mappings"] = result.mappings
         summary["warnings"] = result.warnings
@@ -237,8 +283,8 @@ async def upload_file(file: UploadFile = File(...)):
         await parser.disconnect()
     except Exception as exc:
         try:
-            save_path.unlink(missing_ok=True)
-            _upload_meta_path(file_id).unlink(missing_ok=True)
+            _unlink_if_exists(save_path)
+            _unlink_if_exists(_upload_meta_path(file_id))
         except OSError:
             pass
         raise HTTPException(400, f"文件解析失败：{str(exc)[:300]}")
@@ -390,6 +436,20 @@ async def import_jsonl(payload: JsonlImportSelection):
 
     meta = _load_upload_meta(source_id)
     original_name = meta.get("file_name", "") or path.name
+
+    if await run_in_threadpool(is_graph_jsonl, path):
+        nodes, edges, summary = await run_in_threadpool(
+            parse_graph_jsonl, path, original_name
+        )
+        limit_message = _jsonl_limit_message(
+            len(nodes), len(edges), summary.get("records", 0)
+        )
+        if limit_message:
+            raise HTTPException(413, limit_message)
+        if not nodes:
+            raise HTTPException(400, "未识别到有效记录，请检查 JSONL 格式")
+        return {"nodes": nodes, "edges": edges, "summary": summary}
+
     result = await run_in_threadpool(parse_jsonl, path, original_name)
     if len(result.records) > MAX_JSONL_RECORDS:
         raise HTTPException(413, f"JSONL 记录过多，最多支持 {MAX_JSONL_RECORDS} 条")

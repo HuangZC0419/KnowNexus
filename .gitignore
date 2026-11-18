@@ -3,6 +3,10 @@ __pycache__/
 *.pyc
 .venv/
 .pytest_cache/
+CF37v2/
+wheelhouse-win7/
+.win7-original/
+.win7-validation/
 
 # Frontend
 node_modules/
@@ -22,12 +26,16 @@ backend/projects/*.json
 !backend/projects/index.json
 backend/projects/*.db
 
+# 业务数据与第三方运行库（不入库，避免泄露标准原文与大数据文件）
+/projects/
+/prerequisites/
+/backend/projects_backup_*/
+
 # Env files
 .env
 *.env
 
-# Superpowers session data
-.superpowers/
-
-# IDE
-.claude/settings.local.json
+# 本地 AI 助手 / IDE 配置
+.vscode/
+.idea/
+*.code-workspace

@@ -1,5 +1,7 @@
 # 多视角本体建模工具 (Multi-view Ontology Modeling Tool)
 
+**Windows 7 SP1 64 位离线部署：** 请先阅读 [Win7部署说明.md](Win7部署说明.md)，使用 `start_win7.bat`。下方的 Node/Vite 开发流程和 Linux Docker 部署说明不适用于这次 Win7 离线部署。
+
 基于 OCR 识别与贝叶斯网络的多视角本体建模系统，支持从图片、文档、Excel、数据库中自动抽取本体实体，在可视化画布中进行本体建模，并通过贝叶斯因果网络进行影响分析。
 
 ## 功能特性
@@ -92,21 +94,38 @@
 
 ### 开发模式
 
-**1. 启动后端**
+双击根目录的 `start.bat` 即可同时启动后端和前端（端口被占用会自动顺延，启动信息里会打印实际地址）。
 
-```bash
+`start.bat` 会自动寻找能导入后端依赖的 Python 解释器，优先级为：
+
+1. `BACKEND_PYTHON` 环境变量（python.exe 完整路径）
+2. 根目录 `backend-python.txt`（一行完整路径，不带引号）
+3. 项目虚拟环境 `.venv` / `venv`（根目录或 `backend` 下）
+4. conda 环境 `CFwin11`
+5. conda 环境 `CF`（兼容旧开发环境）
+6. PATH 中的 `python.exe`
+
+找到的解释器会在 `[0/6]` 步骤中打印出来；某个候选环境存在但缺依赖时会给出 `[WARN]` 和修复命令，不会静默失败。
+
+只想检查环境、不启动服务：
+
+```bat
+start.bat --check
+```
+
+手动启动后端（以 CFwin11 为例）：
+
+```bat
+conda activate CFwin11
 cd backend
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-python app\main.py
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
 后端启动后访问 `http://localhost:8000`，API 文档见 `http://localhost:8000/docs`。
 
-**2. 启动前端**
+**启动前端**
 
-另开一个终端：
+`start.bat` 已包含前端启动。需要单独启动时：
 
 ```bash
 cd frontend

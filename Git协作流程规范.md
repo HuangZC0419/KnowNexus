@@ -27,7 +27,7 @@ git checkout feature/你的功能名
 git merge main
 
 # 6. 推送到 GitHub，去网页上提 PR
-#     如果 merge 时出现冲突，把冲突文件交给 AI 工具（如 Claude Code、Cursor、Copilot 等）处理：
+#     如果 merge 时出现冲突，把冲突文件交给 AI 工具（如 DeepSeek Harness 等）处理：
 #         "帮我解决当前分支和 main 的合并冲突"
 #     AI 处理完后，确认无误，再 push
 git push origin feature/你的功能名
@@ -49,7 +49,7 @@ Automatic merge failed; fix conflicts and then commit the result.
 
 **不用慌，丢给 AI 就行：**
 
-1. 打开 AI 编程工具（Claude Code / Cursor / GitHub Copilot 等）
+1. 打开 AI 编程工具（DeepSeek Harness）
 2. 对 AI 说：**"帮我解决当前分支和 main 的合并冲突"**
 3. AI 会读取冲突标记 `<<<<<<<` `=======` `>>>>>>>`，自动判断两边各自的意图，合并出合理的代码
 4. 你检查一下结果，没问题就：

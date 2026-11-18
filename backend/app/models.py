@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Dict, List
+
 from enum import Enum
 from pydantic import BaseModel, Field
 
@@ -40,9 +42,9 @@ class ColumnInfo(BaseModel):
 class ImportSelection(BaseModel):
     """用户勾选的导入项"""
     source_id: str
-    tables: list[str] = Field(default_factory=list)
-    columns: dict[str, list[str]] = Field(default_factory=dict)
-    edited_names: dict[str, str] = Field(default_factory=dict)
+    tables: List[str] = Field(default_factory=list)
+    columns: Dict[str, List[str]] = Field(default_factory=dict)
+    edited_names: Dict[str, str] = Field(default_factory=dict)
 
 
 # ============================================================
@@ -55,19 +57,19 @@ class DataSourceInfo(BaseModel):
     name: str
     type: str
     conn_info: dict = Field(default_factory=dict)
-    tables: list[str] = Field(default_factory=list)
+    tables: List[str] = Field(default_factory=list)
     covered_nodes: int = 0
-    covered_domains: list[str] = Field(default_factory=list)
+    covered_domains: List[str] = Field(default_factory=list)
     total_fields: int = 0
-    covered_ontology_names: list[str] = Field(default_factory=list)
+    covered_ontology_names: List[str] = Field(default_factory=list)
 
 
 class BusinessDomain(BaseModel):
     """业务域（领导视角用）"""
     id: str
     name: str
-    ontology_node_ids: list[str] = Field(default_factory=list)
-    databases: list[str] = Field(default_factory=list)
+    ontology_node_ids: List[str] = Field(default_factory=list)
+    databases: List[str] = Field(default_factory=list)
 
 
 class FieldMapping(BaseModel):
@@ -83,7 +85,7 @@ class DataMapping(BaseModel):
     source_type: str
     source_name: str
     table_name: str
-    field_mappings: list[FieldMapping] = Field(default_factory=list)
+    field_mappings: List[FieldMapping] = Field(default_factory=list)
     node_name: str = ""
     domain_id: str = ""
 
@@ -91,8 +93,8 @@ class DataMapping(BaseModel):
 class LeaderViewData(BaseModel):
     """领导视角完整数据"""
     summary: dict = Field(default_factory=dict)
-    data_sources: list[DataSourceInfo] = Field(default_factory=list)
-    domains: list[BusinessDomain] = Field(default_factory=list)
+    data_sources: List[DataSourceInfo] = Field(default_factory=list)
+    domains: List[BusinessDomain] = Field(default_factory=list)
     source_domain_map: dict = Field(default_factory=dict)
 
 
@@ -100,8 +102,8 @@ class EngineerViewData(BaseModel):
     """工程师视角完整数据"""
     project_name: str = ""
     nodes: list = Field(default_factory=list)
-    mappings: list[DataMapping] = Field(default_factory=list)
-    domains: list[BusinessDomain] = Field(default_factory=list)
+    mappings: List[DataMapping] = Field(default_factory=list)
+    domains: List[BusinessDomain] = Field(default_factory=list)
 
 
 # ============================================================
