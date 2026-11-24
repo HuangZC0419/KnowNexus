@@ -5,7 +5,7 @@
  * 展示 业务域 → 知识概念 → 数据源(表) → 属性映射 的树形结构。
  * 纯 SVG 自绘，手动树布局算法。
  */
-import { ref, reactive, watch, computed, onMounted } from 'vue'
+import { ref, reactive, watch, computed, onMounted, onBeforeUnmount, shallowRef } from 'vue'
 
 const props = defineProps({
   projectId: { type: String, required: true },
@@ -14,7 +14,10 @@ const props = defineProps({
 
 const API_BASE = import.meta.env.VITE_API_BASE || ''
 
-const rawData = ref(null)
+// 接口返回的映射数据可能有几 MB（大项目 3654 条映射、1.4 万条字段），
+// 用普通 ref 会把它整棵深度转成响应式代理，构建树时每次属性读取都走 proxy，
+// 实测初始化要十几秒；这里整体替换、只读不改字段，用 shallowRef 即可。
+const rawData = shallowRef(null)
 const loading = ref(true)
 const error = ref(null)
 const projectMetaName = ref('')
@@ -52,8 +55,24 @@ async function loadProjectName() {
   } catch (e) {}
 }
 
-onMounted(function () { loadProjectName(); loadData() })
-watch(function () { return props.projectId; }, function () { loadProjectName(); loadData() })
+onMounted(function () {
+  loadProjectName()
+  loadData()
+})
+
+// 切换项目：折叠状态、hover 高亮、视图变换全部回到初始态，
+// 等新数据布局完成 + 视口尺寸就绪后由初始定位逻辑重新落位。
+watch(function () { return props.projectId; }, function () {
+  collapsedNodeIds.clear()
+  hoverNodeId.value = null
+  hoverEdgeId.value = null
+  _viewInitialized = false
+  viewTransform.scale = 1
+  viewTransform.x = 0
+  viewTransform.y = 0
+  loadProjectName()
+  loadData()
+})
 
 /* ==========================================================================
    设计系统常量
@@ -205,6 +224,12 @@ const projectName = computed(function () {
   if (d && d.project_name) return d.project_name
   if (projectMetaName.value) return projectMetaName.value
   return props.projectId || '项目'
+})
+
+// 工具栏标题（总栏目全称 + 项目名）；CSS 侧用省略号截断，title 属性保留完整文本
+const MODULE_TITLE = '装配工艺知识库软件工具知识组织功能模块'
+const toolbarTitle = computed(function () {
+  return MODULE_TITLE + ' · ' + projectName.value
 })
 
 const treeRoot = computed(function () {
@@ -391,7 +416,10 @@ function collectVisibleIds(node, ids) {
   }
 }
 
-const lockedLayout = ref(null)
+// 大项目（如「国标3」3654 条映射 ≈ 2 万个树节点）用普通 ref 会把这整棵布局树
+// 深度转成响应式代理，初始化要十几秒；布局节点本身不会被逐字段修改，
+// 折叠状态走独立的 collapsedNodeIds，因此用 shallowRef 只跟踪整体替换即可。
+const lockedLayout = shallowRef(null)
 
 watch(treeRoot, function (root) {
   if (!root) { lockedLayout.value = null; return }
@@ -417,10 +445,26 @@ const layoutResult = computed(function () {
   return { root: lay.root, visibleNodes: visibleNodes, visibleIds: visibleIds, viewW: lay.viewW, viewH: lay.viewH }
 })
 
+/* ==========================================================================
+   视口尺寸 — SVG viewBox 使用 1:1 像素坐标
+   --------------------------------------------------------------------------
+   旧实现让 viewBox 等于整棵树的尺寸（大项目可达 18829 × 94070），
+   浏览器会把内容压到约 0.8%，画布看起来是空白。
+   现在 viewBox 恒等于容器像素尺寸，所以 <g> 上的
+   translate(x,y) scale(s) 就直接等价于屏幕像素，100% 时文字大小正常。
+   ========================================================================== */
+
+const FALLBACK_VIEW_W = 1200
+const FALLBACK_VIEW_H = 800
+
+// 视口像素尺寸；真实尺寸由 ResizeObserver 在 svgContainer 挂载后写入
+const viewportSize = reactive({ w: 0, h: 0 })
+
+const viewWidth = computed(function () { return viewportSize.w || FALLBACK_VIEW_W })
+const viewHeight = computed(function () { return viewportSize.h || FALLBACK_VIEW_H })
+
 const svgViewBox = computed(function () {
-  var lay = layoutResult.value
-  if (!lay) return '0 0 100 100'
-  return '0 0 ' + lay.viewW + ' ' + lay.viewH
+  return '0 0 ' + viewWidth.value + ' ' + viewHeight.value
 })
 
 /* ==========================================================================
@@ -508,13 +552,46 @@ function onEdgeEnter(edgeId) { hoverEdgeId.value = edgeId }
 function onEdgeLeave() { hoverEdgeId.value = null }
 
 /* ==========================================================================
-   缩放 / 平移 — 与知识建模画布完全一致
+   视图变换（平移 / 缩放 / 初始定位）
+   --------------------------------------------------------------------------
+   viewBox 已是 1:1 像素，因此 viewTransform 的单位就是屏幕像素：
+   <g translate(x,y) scale(s)> 把世界坐标 p 映射到屏幕 s*p + t。
    ========================================================================== */
+
+const VIEW_PADDING = 24      // 初始定位留白（px）
+const MIN_SCALE = 0.1
+const MAX_SCALE = 50
 
 const viewTransform = reactive({ x: 0, y: 0, scale: 1 })
 const isDragging = ref(false)
 var dragStartX = 0, dragStartY = 0, dragTransX0 = 0, dragTransY0 = 0
 var _rafId = null, _latestEvent = null
+// 初始定位每个项目只做一次：用户手动平移/缩放后，布局变化不再重置视图
+var _viewInitialized = false
+
+const svgContainer = ref(null)
+var _resizeObserver = null
+
+/** getScreenCTM()：viewBox → 屏幕的映射（1:1 像素时 x/y 恒为 1，e/f 为元素左上角） */
+function getSVGScale() {
+  var svgEl = svgContainer.value && svgContainer.value.querySelector ? svgContainer.value.querySelector('svg') : null
+  if (!svgEl) return { x: 1, y: 1, e: 0, f: 0 }
+  var ctm = svgEl.getScreenCTM()
+  if (!ctm) return { x: 1, y: 1, e: 0, f: 0 }
+  return { x: ctm.a, y: ctm.d, e: ctm.e, f: ctm.f }
+}
+
+/**
+ * 「1 屏幕像素 = 多少世界单位」。
+ * 旧代码只除 getScreenCTM 的缩放系数，在 viewBox 等于整棵树时刚好等于 viewBox 缩放；
+ * 现在 viewBox 是 1:1 像素，该系数恒为 1，真正的缩放来自 viewTransform.scale，
+ * 所以必须两者相乘，放大后才能做到「鼠标跟手」。
+ */
+function worldScaleFactor() {
+  var ctm = getSVGScale()
+  var s = viewTransform.scale || 1
+  return { x: (ctm.x || 1) * s, y: (ctm.y || 1) * s }
+}
 
 function _handleDragMouseMove(e) {
   _latestEvent = e
@@ -522,9 +599,9 @@ function _handleDragMouseMove(e) {
     _rafId = requestAnimationFrame(function () {
       _rafId = null
       if (!_latestEvent || !isDragging.value) return
-      var scale = getSVGScale()
-      viewTransform.x = dragTransX0 + (_latestEvent.clientX - dragStartX) / scale.x
-      viewTransform.y = dragTransY0 + (_latestEvent.clientY - dragStartY) / scale.y
+      var f = worldScaleFactor()
+      viewTransform.x = dragTransX0 + (_latestEvent.clientX - dragStartX) / f.x
+      viewTransform.y = dragTransY0 + (_latestEvent.clientY - dragStartY) / f.y
       _latestEvent = null
     })
   }
@@ -549,7 +626,8 @@ function onSvgMouseDown(e) {
   e.preventDefault()
 }
 
-// 与 App.vue onWheel 完全相同的缩放公式
+// 以鼠标位置为锚点缩放：锚点在「SVG 用户坐标」里保持不动
+// t' = mouse - ratio * (mouse - t)，与 viewBox 缩放无关，故 1:1 后公式无需改动
 function onSvgWheel(event) {
   var rect = svgContainer.value ? svgContainer.value.getBoundingClientRect() : null
   if (!rect) return
@@ -557,42 +635,165 @@ function onSvgWheel(event) {
   var zoomSensitivity = 0.001
   var delta = -event.deltaY * zoomSensitivity
   var newScale = viewTransform.scale * (1 + delta)
-  // 内容较多时初始视图会被缩得很小，允许放大到 50 倍以便看清文字。
-  newScale = Math.max(0.1, Math.min(newScale, 50))
+  // 内容较多时初始视图会很小，允许放大到 50 倍以便看清文字。
+  newScale = Math.max(MIN_SCALE, Math.min(newScale, MAX_SCALE))
 
-  var scale = getSVGScale()
-  var mouseXSvg = (event.clientX - scale.e) / scale.x
-  var mouseYSvg = (event.clientY - scale.f) / scale.y
+  var ctm = getSVGScale()
+  var mouseXSvg = (event.clientX - ctm.e) / ctm.x
+  var mouseYSvg = (event.clientY - ctm.f) / ctm.y
   var scaleRatio = newScale / viewTransform.scale
   viewTransform.x = mouseXSvg - (mouseXSvg - viewTransform.x) * scaleRatio
   viewTransform.y = mouseYSvg - (mouseYSvg - viewTransform.y) * scaleRatio
   viewTransform.scale = newScale
 }
 
-// 与 App.vue 完全相同的缩放控件方法
 function zoomIn() {
-  viewTransform.scale = Math.min(viewTransform.scale * 1.2, 50)
+  viewTransform.scale = Math.min(viewTransform.scale * 1.2, MAX_SCALE)
 }
 
 function zoomOut() {
-  viewTransform.scale = Math.max(viewTransform.scale / 1.2, 0.1)
+  viewTransform.scale = Math.max(viewTransform.scale / 1.2, MIN_SCALE)
 }
 
-function zoomReset() {
-  viewTransform.scale = 1
-  viewTransform.x = 0
-  viewTransform.y = 0
+/**
+ * 初始定位 / 重置视图（首次进入、切换项目、点「重置视图」共用同一套公式）。
+ *
+ * 1) 整棵树能放进视口（小项目）：
+ *      scale = min((w - 2·pad) / viewW, (h - 2·pad) / viewH, 1)
+ *      x = (w - viewW·scale) / 2 ，y = (h - viewH·scale) / 2      → 适配并居中
+ * 2) 放不下（大项目）：scale = 1，根节点左上角贴到视口 (pad, pad)
+ *      x = pad - root._x ，y = pad - root._y                       → 一进来就能看到根节点与第一层
+ */
+function applyInitialView() {
+  var lay = layoutResult.value
+  var vw = viewWidth.value
+  var vh = viewHeight.value
+
+  if (!lay) {
+    viewTransform.scale = 1
+    viewTransform.x = 0
+    viewTransform.y = 0
+    return
+  }
+
+  if (lay.viewW <= vw && lay.viewH <= vh) {
+    var fitScale = Math.min(
+      (vw - VIEW_PADDING * 2) / lay.viewW,
+      (vh - VIEW_PADDING * 2) / lay.viewH,
+      1
+    )
+    viewTransform.scale = Math.max(fitScale, MIN_SCALE)
+    viewTransform.x = (vw - lay.viewW * viewTransform.scale) / 2
+    viewTransform.y = (vh - lay.viewH * viewTransform.scale) / 2
+  } else {
+    viewTransform.scale = 1
+    viewTransform.x = VIEW_PADDING - lay.root._x
+    viewTransform.y = VIEW_PADDING - lay.root._y
+  }
+  _viewInitialized = true
 }
 
-const svgContainer = ref(null)
-
-function getSVGScale() {
-  var svgEl = svgContainer.value?.querySelector('svg')
-  if (!svgEl) return { x: 1, y: 1, e: 0, f: 0 }
-  var ctm = svgEl.getScreenCTM()
-  if (!ctm) return { x: 1, y: 1, e: 0, f: 0 }
-  return { x: ctm.a, y: ctm.d, e: ctm.e, f: ctm.f }
+/** 右下角「重置视图」按钮：回到该项目的初始落位 */
+function resetView() {
+  applyInitialView()
 }
+
+/* ---------- 视口尺寸监听：ResizeObserver → viewportSize ---------- */
+
+function measureViewport() {
+  var el = svgContainer.value
+  if (!el) return
+  var rect = el.getBoundingClientRect()
+  var w = Math.max(0, Math.round(rect.width))
+  var h = Math.max(0, Math.round(rect.height))
+  if (!w || !h) return
+  if (w !== viewportSize.w || h !== viewportSize.h) {
+    viewportSize.w = w
+    viewportSize.h = h
+  }
+}
+
+function teardownViewportObserver() {
+  if (_resizeObserver) {
+    _resizeObserver.disconnect()
+    _resizeObserver = null
+  }
+}
+
+function setupViewportObserver(el) {
+  teardownViewportObserver()
+  if (!el) return
+  measureViewport()
+  if (typeof ResizeObserver === 'undefined') return
+  _resizeObserver = new ResizeObserver(measureViewport)
+  _resizeObserver.observe(el)
+}
+
+// svgContainer 位于 v-else 分支：加载中/空态时不存在，数据就绪后才挂载
+watch(svgContainer, function (el) { setupViewportObserver(el) }, { flush: 'post' })
+
+// 第一次「数据布局完成 + 视口尺寸就绪」时落位；之后的重排（折叠、窗口缩放）不打扰用户
+watch(
+  function () { return [layoutResult.value, viewportSize.w, viewportSize.h] },
+  function (val) {
+    if (_viewInitialized) return
+    if (!val[0]) return
+    if (!viewportSize.w || !viewportSize.h) return
+    applyInitialView()
+  },
+  { immediate: true, flush: 'post' }
+)
+
+onBeforeUnmount(teardownViewportObserver)
+
+/* ==========================================================================
+   视口裁剪（大项目性能）—— 只渲染与可视区域相交的节点/边
+   ========================================================================== */
+
+// 世界坐标单位的外扩边距：略微超出屏幕，平移时不会露出「空白边缘」
+const CULL_MARGIN = 240
+
+// 当前视口反算到世界坐标后的矩形（含外扩）
+const cullRect = computed(function () {
+  var s = viewTransform.scale || 1
+  var vw = viewWidth.value
+  var vh = viewHeight.value
+  var left = (0 - viewTransform.x) / s
+  var top = (0 - viewTransform.y) / s
+  return {
+    x1: left - CULL_MARGIN,
+    y1: top - CULL_MARGIN,
+    x2: left + vw / s + CULL_MARGIN,
+    y2: top + vh / s + CULL_MARGIN
+  }
+})
+
+/** 两个轴对齐包围盒是否相交 */
+function rectsIntersect(ax1, ay1, ax2, ay2, r) {
+  return ax1 <= r.x2 && ax2 >= r.x1 && ay1 <= r.y2 && ay2 >= r.y1
+}
+
+const renderNodes = computed(function () {
+  var lay = layoutResult.value
+  if (!lay) return []
+  var r = cullRect.value
+  return lay.visibleNodes.filter(function (n) {
+    return rectsIntersect(n._x, n._y, n._x + n._w, n._y + n._h, r)
+  })
+})
+
+// 边的裁剪只保留「子端点（连线指向的节点）落在可视区（含外扩）」的连线。
+// 若按整条折线的包围盒判断，超大项目（如 3654 个概念、树高 24 万像素）里
+// 几乎所有「域 → 概念」长竖线的包围盒都会穿过视口，导致一次渲染近万条路径。
+// 树是自左向右生长的：每条边的末端就是被连接的子节点，只要子节点在屏幕内
+// 就保留整条线（父节点在屏幕外也能看到线从边缘连进来）；子节点在屏幕外的
+// 长线对当前视野没有信息价值，去掉后拖动明显更流畅。
+const renderEdges = computed(function () {
+  var r = cullRect.value
+  return edgeList.value.filter(function (e) {
+    return e.x2 >= r.x1 && e.x2 <= r.x2 && e.y2 >= r.y1 && e.y2 <= r.y2
+  })
+})
 
 /* ==========================================================================
    统计
@@ -644,7 +845,7 @@ const stats = computed(function () {
     <div v-else class="mindmap-content">
       <!-- 工具栏 -->
       <div class="toolbar">
-        <div class="toolbar-title">知识组织 · {{ projectName }}</div>
+        <div class="toolbar-title" :title="toolbarTitle">{{ toolbarTitle }}</div>
         <div class="toolbar-spacer"></div>
         <button class="action-btn" @click="expandAllNodes" title="展开全部">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
@@ -689,7 +890,7 @@ const stats = computed(function () {
             :style="isDragging ? { willChange: 'transform' } : {}">
             <!-- 连线层 -->
             <g class="edges-layer">
-              <template v-for="edge in edgeList" :key="edge.id">
+              <template v-for="edge in renderEdges" :key="edge.id">
                 <path
                   :d="'M' + edge.x1 + ' ' + edge.y1
                     + ' L' + ((edge.x1 + edge.x2) / 2) + ' ' + edge.y1
@@ -708,7 +909,7 @@ const stats = computed(function () {
 
             <!-- 节点层 -->
             <g class="nodes-layer">
-              <template v-for="node in layoutResult.visibleNodes" :key="node.id">
+              <template v-for="node in renderNodes" :key="node.id">
                 <g class="mm-node"
                   :class="{ 'mm-node-hover': hoverHighlightNodeIds.has(node.id) }"
                   :opacity="hoverHighlightNodeIds.size > 0 && !hoverHighlightNodeIds.has(node.id) && node.type !== 'root' ? 0.22 : 1"
@@ -821,7 +1022,7 @@ const stats = computed(function () {
           <button class="zoom-btn" @click="zoomIn" title="放大">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           </button>
-          <button class="zoom-btn" @click="zoomReset" title="适合窗口">
+          <button class="zoom-btn" @click="resetView" title="重置视图">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
           </button>
           <button class="zoom-btn" @click="zoomOut" title="缩小">
@@ -905,13 +1106,19 @@ const stats = computed(function () {
   flex-shrink: 0;
   user-select: none;
 }
+/* 标题占据工具栏剩余空间：超长时省略号截断，绝不挤压右侧按钮与统计 */
 .toolbar-title {
   font-size: 14px;
   font-weight: 700;
   color: #1E3A5F;
-  flex-shrink: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.toolbar-spacer { flex: 1; }
+/* 标题已占满剩余空间，占位块不再参与分配，避免与标题平分宽度导致过早截断 */
+.toolbar-spacer { flex: 0 0 auto; }
 
 .action-btn {
   display: inline-flex;
@@ -928,6 +1135,7 @@ const stats = computed(function () {
   transition: all 0.15s ease;
   font-family: inherit;
   white-space: nowrap;
+  flex-shrink: 0; /* 标题很长时按钮保持原尺寸，不被压缩变形 */
 }
 .action-btn:hover { background: #F1F5F9; border-color: #CBD5E1; color: #1E3A5F; }
 
@@ -980,7 +1188,7 @@ const stats = computed(function () {
 .svg-viewport:active { cursor: grabbing; }
 .mindmap-svg { width: 100%; height: 100%; display: block; }
 
-/* 缩放控件 — 与知识建模画布相同：右下角竖排 */
+/* 缩放控件 — 与新增知识画布相同：右下角竖排 */
 .zoom-controls {
   position: absolute;
   bottom: 20px;

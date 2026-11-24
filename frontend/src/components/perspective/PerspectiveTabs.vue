@@ -47,7 +47,7 @@ function switchTab(key) {
   <nav class="perspective-navbar">
     <!-- 总栏目：标题 + 三种模式同属"知识组织"，整体水平居中 -->
     <div class="nav-group">
-      <h3 class="nav-group-title">知识组织</h3>
+      <h3 class="nav-group-title">装配工艺知识库软件工具知识组织功能模块</h3>
 
       <div class="nav-tabs">
         <button
@@ -147,11 +147,15 @@ function switchTab(key) {
 
 .nav-group-title {
   margin: 0;
-  font-size: 20px; /* 20px vs 模式名 15px，约 1.33 倍，一眼可辨的总栏目层级 */
+  /* 21 个汉字的总栏目名：桌面端维持 20px（vs 模式名 15px，约 1.33 倍），
+     窄屏按 1.4vw 回落、下限 15px，避免 600px 及以下断点横向溢出 */
+  font-size: clamp(15px, 1.4vw, 20px);
   font-weight: 700;
   color: #1e3a5f; /* 主题色：总栏目标题是区域视觉锚点 */
   letter-spacing: 0.04em;
-  line-height: 1;
+  line-height: 1.35; /* 极窄屏允许折成两行，行距不挤 */
+  text-align: center;
+  max-width: 100%; /* 不撑破 .nav-group 的左右 padding */
 }
 
 /* ======================== 模式选项卡 ======================== */

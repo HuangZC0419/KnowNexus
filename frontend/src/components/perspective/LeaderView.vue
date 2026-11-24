@@ -11,6 +11,11 @@ const data = ref(null);
 const loading = ref(true);
 const error = ref(null);
 
+// 数据底座分页：每页条数（全量数据源统一分页，而非每组各自分页）
+// 取 9 与卡片网格的 3 列配合，单类型恰好铺满 3×3 一行，一页高度可控制在约 700px 内
+const SOURCE_PAGE_SIZE = 10;
+const sourcePage = ref(1);
+
 async function loadData() {
   // 防止 projectId 为 null/undefined 时发出无效请求
   if (!props.projectId || props.projectId === 'null') {
@@ -20,6 +25,8 @@ async function loadData() {
   }
   loading.value = true;
   error.value = null;
+  // 重新加载（含切换项目）后页码回到第一页
+  sourcePage.value = 1;
   try {
     const resp = await fetch(
       `${API_BASE}/api/perspective/${props.projectId}/leader`
@@ -124,6 +131,106 @@ const sourceGroups = computed(() => {
 
   return groups.filter((g) => g.sources.length > 0);
 });
+
+// ========== 数据底座分页 ==========
+// 分页在「全部数据源」上统一计算：先把分组结果按类型顺序展平成一维列表，
+// 按页切片，再把当前页的条目重新按类型分组渲染，从而保留多类型并排的既有结构。
+const flattenedSources = computed(() => {
+  const entries = [];
+  for (const group of sourceGroups.value) {
+    for (const src of group.sources) {
+      entries.push({ type: group.type, source: src });
+    }
+  }
+  return entries;
+});
+
+const totalSourceCount = computed(() => flattenedSources.value.length);
+
+// 各类型的总量（分组头部需要同时体现「本页」与「总数」）
+const sourceTypeTotals = computed(() => {
+  const totals = {};
+  for (const entry of flattenedSources.value) {
+    totals[entry.type] = (totals[entry.type] || 0) + 1;
+  }
+  return totals;
+});
+
+const totalSourcePages = computed(() =>
+  Math.max(1, Math.ceil(totalSourceCount.value / SOURCE_PAGE_SIZE))
+);
+
+// 数据源总数不超过一页时不渲染分页控件，布局与分页前完全一致
+const showSourcePager = computed(
+  () => totalSourceCount.value > SOURCE_PAGE_SIZE
+);
+
+// 渲染用页码：越界时钳制到合法范围（只做只读派生，不在此处写入 sourcePage）
+const currentSourcePage = computed(() => {
+  if (!showSourcePager.value) return 1;
+  return Math.min(Math.max(1, sourcePage.value), totalSourcePages.value);
+});
+
+const visibleSourceGroups = computed(() => {
+  const start = (currentSourcePage.value - 1) * SOURCE_PAGE_SIZE;
+  const pageEntries = flattenedSources.value.slice(
+    start,
+    start + SOURCE_PAGE_SIZE
+  );
+
+  const groups = [];
+  for (const entry of pageEntries) {
+    let group = groups.find((g) => g.type === entry.type);
+    if (!group) {
+      group = {
+        type: entry.type,
+        sources: [],
+        total: sourceTypeTotals.value[entry.type] || 0,
+      };
+      groups.push(group);
+    }
+    group.sources.push(entry.source);
+  }
+  return groups;
+});
+
+// 数据源数量变化（切换项目 / 重新加载 / 后端数据变动）后，当前页越界则回收到最后一页
+watch(totalSourceCount, () => {
+  if (sourcePage.value > totalSourcePages.value) {
+    sourcePage.value = totalSourcePages.value;
+  }
+  if (sourcePage.value < 1) sourcePage.value = 1;
+});
+
+const sourceSectionEl = ref(null);
+
+// 翻页后仅在区块完全离开视口时做一次最小滚动，避免整页跳动
+function keepSourceSectionInView() {
+  if (typeof window === "undefined" || !window.requestAnimationFrame) return;
+  window.requestAnimationFrame(() => {
+    const el = sourceSectionEl.value;
+    if (!el || typeof el.getBoundingClientRect !== "function") return;
+    const rect = el.getBoundingClientRect();
+    const viewportHeight = window.innerHeight || 0;
+    if (rect.top >= 0 && rect.bottom <= viewportHeight) return;
+    el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  });
+}
+
+function goToSourcePage(nextPage) {
+  const target = Math.min(Math.max(1, nextPage), totalSourcePages.value);
+  if (target === currentSourcePage.value) return;
+  sourcePage.value = target;
+  keepSourceSectionInView();
+}
+
+function goPrevSourcePage() {
+  goToSourcePage(currentSourcePage.value - 1);
+}
+
+function goNextSourcePage() {
+  goToSourcePage(currentSourcePage.value + 1);
+}
 
 // 仅当确实存在 jsonl 数据源时补充图例，不改变其他来源的既有展示
 const hasJsonlSource = computed(() =>
@@ -409,14 +516,14 @@ function getVerticalCurve(x1, y1, x2, y2) {
         </div>
       </section>
 
-      <section class="lv-section">
+      <section class="lv-section" ref="sourceSectionEl">
         <div class="lv-section-header">
           <span class="section-bar"></span>
           <span class="section-title">数据底座</span>
         </div>
-        <div v-if="sourceGroups.length" class="lv-source-groups">
+        <div v-if="visibleSourceGroups.length" class="lv-source-groups">
           <div
-            v-for="group in sourceGroups"
+            v-for="group in visibleSourceGroups"
             :key="group.type"
             class="lv-source-group"
           >
@@ -430,7 +537,10 @@ function getVerticalCurve(x1, y1, x2, y2) {
               >
                 {{ sourceTypeStyle(group.type).label }}
               </span>
-              <span class="lsg-count">{{ group.sources.length }} 个数据源</span>
+              <span class="lsg-count">
+                <template v-if="showSourcePager">本页 {{ group.sources.length }} / 共 {{ group.total }} 个数据源</template>
+                <template v-else>{{ group.sources.length }} 个数据源</template>
+              </span>
             </div>
             <div class="lsg-cards">
               <div
@@ -490,6 +600,24 @@ function getVerticalCurve(x1, y1, x2, y2) {
             <path d="M3 5 L3 19 A9 3 0 0 0 21 19 L21 5"/>
           </svg>
           <span>暂无数据源信息</span>
+        </div>
+        <div v-if="showSourcePager" class="lv-source-pager">
+          <span class="lsp-total">共 {{ totalSourceCount }} 个数据源</span>
+          <div class="lsp-controls">
+            <button
+              type="button"
+              class="lsp-btn"
+              :disabled="currentSourcePage <= 1"
+              @click="goPrevSourcePage"
+            >上一页</button>
+            <span class="lsp-indicator">第 {{ currentSourcePage }} / {{ totalSourcePages }} 页</span>
+            <button
+              type="button"
+              class="lsp-btn"
+              :disabled="currentSourcePage >= totalSourcePages"
+              @click="goNextSourcePage"
+            >下一页</button>
+          </div>
         </div>
       </section>
 
@@ -858,6 +986,8 @@ function getVerticalCurve(x1, y1, x2, y2) {
   flex-wrap: wrap;
   gap: 16px;
   align-items: stretch;
+  /* 预留两行卡片的高度：末页只剩少量卡片时容器不塌陷，分页条位置不跳动 */
+  min-height: 276px;
 }
 
 .lv-source-group {
@@ -891,9 +1021,15 @@ function getVerticalCurve(x1, y1, x2, y2) {
 }
 
 .lsg-cards {
-  display: flex;
-  flex-direction: column;
+  /* 组内卡片按响应式网格排列：宽屏一行多张，多类型并排时自动退化成 1 张/行。
+     min(300px, 100%) 保证极窄容器下不会横向溢出（等价于固定 300px 下限）。
+     grid-auto-rows 固定行高：卡片内容（名称、表名）长短不再撑高所在行，
+     翻页时整块高度和分页条位置保持稳定。 */
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
+  grid-auto-rows: 132px;
   gap: 12px;
+  align-content: start;
   flex: 1;
 }
 
@@ -906,6 +1042,12 @@ function getVerticalCurve(x1, y1, x2, y2) {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  /* 固定卡片高度：名称/表名长短只影响省略号，不再改变容器高度 */
+  height: 132px;
+  min-height: 132px;
+  max-height: 132px;
+  overflow: hidden;
+  box-sizing: border-box;
   flex: 1;
   transition: box-shadow 0.2s ease, border-color 0.2s ease;
 }
@@ -913,6 +1055,78 @@ function getVerticalCurve(x1, y1, x2, y2) {
 .lsg-card:hover {
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
   border-color: #cbd5e1;
+}
+
+/* 数据底座分页控件（沿用 slate 色系） */
+.lv-source-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.lsp-total {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #94a3b8;
+}
+
+.lsp-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.lsp-indicator {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+  min-width: 88px;
+  text-align: center;
+}
+
+.lsp-btn {
+  appearance: none;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: #0f172a;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease,
+    color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.lsp-btn:hover:not(:disabled) {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+}
+
+.lsp-btn:active:not(:disabled) {
+  background: #f1f5f9;
+}
+
+.lsp-btn:focus-visible {
+  outline: none;
+  border-color: #94a3b8;
+  box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.28);
+}
+
+.lsp-btn:disabled {
+  background: #ffffff;
+  border-color: #eef2f7;
+  color: #cbd5e1;
+  cursor: not-allowed;
+  box-shadow: none;
 }
 
 .lsgc-top {
@@ -927,6 +1141,7 @@ function getVerticalCurve(x1, y1, x2, y2) {
   font-weight: 700;
   color: #0f172a;
   font-family: "SF Mono", "Cascadia Code", ui-monospace, monospace;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -979,9 +1194,10 @@ function getVerticalCurve(x1, y1, x2, y2) {
 
 .lsgc-table-chips {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px;
   margin-top: auto;
+  overflow: hidden;
 }
 
 .lsgc-chip {
@@ -995,6 +1211,14 @@ function getVerticalCurve(x1, y1, x2, y2) {
   font-weight: 500;
   border: 1px solid #e8ecf1;
   line-height: 1.4;
+  /* 表名超长时省略，不换行、不撑高卡片 */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  box-sizing: border-box;
 }
 
 .lv-svg-wrap {
@@ -1098,6 +1322,15 @@ function getVerticalCurve(x1, y1, x2, y2) {
 
 @media (max-width: 640px) {
   /* removed .lsg-cards specific grid override since it's flex column now */
+  .lv-source-pager {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .lsp-controls {
+    width: 100%;
+    justify-content: space-between;
+  }
 }
 
 </style>
