@@ -6,6 +6,7 @@ import EngineerView from "./components/perspective/EngineerView.vue";
 import ProcessView from "./components/perspective/ProcessView.vue";
 import DataSourcePanel from "./components/datasource/DataSourcePanel.vue";
 import LoginView from "./components/auth/LoginView.vue";
+import ModuleHub from "./components/hub/ModuleHub.vue";
 import KnowledgeSearchPanel from "./components/knowledge/KnowledgeSearchPanel.vue";
 
 // 统一使用相对路径（空字符串）：所有请求打向当前源，由 Vite dev server 的 proxy
@@ -51,6 +52,8 @@ const canvasRef = ref(null);
 const isLoggedIn = ref(false);
 const currentUser = ref({ token: "", username: "", name: "", role: "" });
 const isManager = computed(() => currentUser.value.role === "manager");
+// 已进入的功能模块 id，空字符串表示停留在「模块选择」页（不持久化，刷新后重新选择）
+const activeModule = ref("");
 
 // 画布平移与缩放状态
 const viewOffset = ref({ x: 0, y: 0 });
@@ -811,7 +814,7 @@ async function switchProject(id) {
   statusMessage.value = "已切换项目";
 }
 
-// 混合标注导入完成：刷新项目列表 → 选中新项目并加载画布 → 切到知识建模视角
+// 混合标注导入完成：刷新项目列表 → 选中新项目并加载画布 → 切到新增知识视角
 // 复用 loadProjects / switchProject（后者内部已调用 loadGraph），避免重复实现加载逻辑
 async function onMixedImported(result) {
   if (!result || !result.project_id) {
@@ -1602,7 +1605,7 @@ function clearHighlight() {
 }
 
 // ========================
-// 知识检索：结果定位与高亮
+// 知识定位：结果定位与高亮
 // ========================
 // 挂起的定位目标：需等视角切换动画结束、画布恢复全尺寸后再测量时才非空
 const pendingLocate = ref(null);
@@ -1635,7 +1638,7 @@ function focusNodeOnCanvas(nodeId) {
 // 执行定位：未命中时给出提示而非静默失败
 function applyLocate(target) {
   if (!focusNodeOnCanvas(target.focusNodeId)) {
-    statusMessage.value = "该结果未出现在当前知识建模画布中";
+    statusMessage.value = "该结果未出现在当前画布中";
     return;
   }
   highlightNodes(target.nodeIds, target.edgeIds);
@@ -1652,7 +1655,7 @@ function flushPendingLocate() {
   applyLocate(target);
 }
 
-// 切到知识建模视角并定位。
+// 切到新增知识视角并定位。
 // 判据必须是「确实稳定停留在 process 且无进行中的过渡」——因为下面会同步把
 // currentPerspective 置为 process，单看它无法区分「本来就在」与「刚切过来」；
 // 若在过渡窗口内连续点击，第二击会被误判为可立即测量（此时离场元素仍在 DOM，
@@ -1668,12 +1671,12 @@ function requestLocate(target) {
   currentPerspective.value = "process";
 }
 
-// 点击检索结果中的概念：切到知识建模视角并居中高亮
+// 点击检索结果中的概念：切到新增知识视角并居中高亮
 function onLocateConcept(nodeId) {
   requestLocate({ focusNodeId: nodeId, nodeIds: [nodeId], edgeIds: [] });
 }
 
-// 点击检索结果中的关系：切到知识建模视角，居中源概念并高亮两端
+// 点击检索结果中的关系：切到新增知识视角，居中源概念并高亮两端
 function onLocateRelation(edgeId) {
   const edge = edges.value.find((e) => e.id === edgeId);
   if (!edge) {
@@ -1690,8 +1693,8 @@ function onLocateRelation(edgeId) {
 // ========================
 // 多视角切换逻辑
 // ========================
-// 工作台标签切换：导入/检索/分析只切换左侧面板，不改变右侧视角；
-// 知识建模额外切到本体推理视角（建模操作需要看画布）
+// 工作台标签切换：导入/定位/分析只切换左侧面板，不改变右侧视角；
+// 新增知识额外切到本体推理视角（建模操作需要看画布）
 function switchWorkbench(tab) {
   activeWorkbenchTab.value = tab;
   if (tab === "modeling") {
@@ -1708,8 +1711,8 @@ const flyoutTop = ref(0); // 浮层纵向位置（对齐被点击的一级菜单
 // 一级菜单名称（用于浮层顶部标题）
 const WORKBENCH_LABELS = {
   import: "数据导入",
-  modeling: "知识建模",
-  retrieval: "知识检索",
+  modeling: "新增知识",
+  retrieval: "知识定位",
   analysis: "知识分析",
 };
 const activeTabLabel = computed(() => WORKBENCH_LABELS[activeWorkbenchTab.value] || "");
@@ -1894,9 +1897,16 @@ function onImportNodes(importedNodes, importedEdges, importedInfRules, importedM
 function onLoginSuccess(user) {
   currentUser.value = user;
   isLoggedIn.value = true;
+  // 登录成功后先停留在模块选择页，不自动进入任何模块
+  activeModule.value = "";
   localStorage.setItem("benti_user", JSON.stringify(user));
   // 登录成功后重新加载项目列表（避免 onMounted 时 loadProjects 已失败导致 currentProjectId 为空）
   loadProjects();
+}
+
+// 模块选择页 -> 具体功能模块（当前仅知识组织可用）
+function onEnterModule(moduleId) {
+  if (moduleId === "organization") activeModule.value = moduleId;
 }
 
 function onLogout() {
@@ -1904,6 +1914,7 @@ function onLogout() {
   fetch(`${API_BASE}/api/auth/logout?token=${token}`, { method: "POST" }).catch(() => {});
   currentUser.value = { token: "", username: "", name: "", role: "" };
   isLoggedIn.value = false;
+  activeModule.value = "";
   localStorage.removeItem("benti_user");
 }
 
@@ -1967,7 +1978,15 @@ onUnmounted(() => {
   <!-- 未登录：显示登录界面 -->
   <LoginView v-if="!isLoggedIn" @login-success="onLoginSuccess" />
 
-  <!-- 已登录：显示完整界面 -->
+  <!-- 已登录但未选择模块：显示模块选择页 -->
+  <ModuleHub
+    v-else-if="!activeModule"
+    :user="currentUser"
+    @enter="onEnterModule"
+    @logout="onLogout"
+  />
+
+  <!-- 已进入模块：显示完整界面 -->
   <div v-else class="app-container" @click="hideContextMenu">
     <!-- 全局关系数据列表，供所有的 input list="rel-list" 使用 -->
     <datalist id="rel-list">
@@ -2019,11 +2038,11 @@ onUnmounted(() => {
         </button>
         <button class="workbench-tab" :class="{ active: activeWorkbenchTab === 'modeling' }" @click="toggleWorkbench('modeling', $event)">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
-          <span>知识建模</span>
+          <span>新增知识</span>
         </button>
         <button class="workbench-tab" :class="{ active: activeWorkbenchTab === 'retrieval' }" @click="toggleWorkbench('retrieval', $event)">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <span>知识检索</span>
+          <span>知识定位</span>
         </button>
         <button class="workbench-tab" :class="{ active: activeWorkbenchTab === 'analysis' }" @click="toggleWorkbench('analysis', $event)">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="20" x2="6" y2="16"/><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/></svg>
@@ -3003,7 +3022,7 @@ onUnmounted(() => {
       </div>
     </aside>
 
-    <!-- 自定义 Prompt 弹窗（全局：避免只在知识建模视角可用） -->
+    <!-- 自定义 Prompt 弹窗（全局：避免只在新增知识视角可用） -->
     <div class="prompt-overlay" v-if="promptState.visible" @click.self="cancelPrompt">
       <div class="prompt-dialog">
         <h3>{{ promptState.title }}</h3>
@@ -3022,7 +3041,7 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- 自定义 Confirm 弹窗（全局：避免只在知识建模视角可用） -->
+    <!-- 自定义 Confirm 弹窗（全局：避免只在新增知识视角可用） -->
     <div class="prompt-overlay" v-if="confirmState.visible" @click.self="handleConfirm(false)">
       <div class="prompt-dialog">
         <h3>{{ confirmState.title }}</h3>
