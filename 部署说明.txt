@@ -17,6 +17,8 @@
   第零步：清理旧容器（如果之前部署过）
 ============================================
 
+docker stop multi-view-ontology-tool 2>/dev/null
+docker rm multi-view-ontology-tool 2>/dev/null
 docker stop knownexus 2>/dev/null
 docker rm knownexus 2>/dev/null
 
