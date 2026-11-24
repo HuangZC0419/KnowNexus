@@ -27,9 +27,9 @@
 ```yaml
 version: "3.3"
 services:
-  ontology-tool:
-    image: multi-view-ontology-tool:latest
-    container_name: multi-view-ontology-tool
+  knownexus:
+    image: knownexus:latest
+    container_name: knownexus
     ports:
       - "3001:3001"
     volumes:
@@ -230,7 +230,7 @@ backend/uploads
 
 | 文件 | 说明 |
 |------|------|
-| `multi-view-ontology-tool.tar` | `docker save` 导出的完整镜像 |
+| `knownexus.tar` | `docker save` 导出的完整镜像 |
 | `docker-compose.offline.yml` | 离线部署配置（随项目 zip 一起给） |
 | `部署说明.txt` | 客户操作步骤 |
 

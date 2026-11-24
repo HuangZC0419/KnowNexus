@@ -2,7 +2,7 @@
 
 > 适用于：Python + FastAPI 后端 + Vue/React 前端 的 Docker 容器化项目
 > 最后更新：2026-06-08
-> 基于项目 `Multi-view-Ontology-Modeling-Tool` 实际打包经验总结
+> 基于项目 `KnowNexus` 实际打包经验总结
 
 ---
 
@@ -146,7 +146,7 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```yaml
 version: "3.3"
 services:
-  ontology-tool:
+  knownexus:
     build:
       context: .
       dockerfile: Dockerfile
@@ -179,7 +179,7 @@ services:
 ```yaml
 version: "3.3"
 services:
-  ontology-tool:
+  knownexus:
     image: <项目名>:latest        # 直接用本地镜像，无 build 段
     container_name: <容器名>
     ports:
@@ -294,7 +294,7 @@ docker --version
 docker-compose --version
 
 # 确认镜像已导入
-docker images | grep multi-view-ontology-tool
+docker images | grep knownexus
 ```
 
 ### 部署前文件检查（重要！）
@@ -472,4 +472,4 @@ sudo firewall-cmd --reload
 | 日期 | 版本 | 变更 |
 |------|------|------|
 | 2026-06-12 | v1.1 | 兼容旧版 docker-compose 1.x：version 改为显式 "3.3"，所有命令改用 docker-compose（有连字符），新增 BOM/CRLF 文件检查步骤，新增 Q8-Q10 故障排查 |
-| 2026-06-08 | v1.0 | 初始版本，基于 Multi-view-Ontology-Modeling-Tool 打包经验 |
+| 2026-06-08 | v1.0 | 初始版本，基于 KnowNexus 打包经验 |

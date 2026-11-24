@@ -1,5 +1,5 @@
 ============================================
-  多视角本体建模工具 — 离线部署说明
+  装配工艺知识库软件（KnowNexus）— 离线部署说明
   适用环境: RHEL 7 / CentOS 7 + docker-compose 1.x
 ============================================
 
@@ -17,25 +17,25 @@
   第零步：清理旧容器（如果之前部署过）
 ============================================
 
-docker stop multi-view-ontology-tool 2>/dev/null
-docker rm multi-view-ontology-tool 2>/dev/null
+docker stop knownexus 2>/dev/null
+docker rm knownexus 2>/dev/null
 
 ============================================
   第一步：解压项目（用新 zip 覆盖旧目录）
 ============================================
 
-rm -rf Multi-view-Ontology-Modeling-Tool-master
-unzip Multi-view-Ontology-Modeling-Tool-master.zip
-cd Multi-view-Ontology-Modeling-Tool-master
+rm -rf KnowNexus-master
+unzip KnowNexus-master.zip
+cd KnowNexus-master
 
 ============================================
   第二步：导入新镜像
 ============================================
 
-docker load -i multi-view-ontology-tool.tar
+docker load -i knownexus.tar
 
 确认镜像已导入：
-docker images | grep multi-view-ontology-tool
+docker images | grep knownexus
 
 ============================================
   第三步：启动服务

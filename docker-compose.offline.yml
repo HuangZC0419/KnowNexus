@@ -1,8 +1,8 @@
 version: "3.3"
 services:
-  ontology-tool:
-    image: multi-view-ontology-tool:latest
-    container_name: multi-view-ontology-tool
+  knownexus:
+    image: knownexus:latest
+    container_name: knownexus
     ports:
       - "3001:3001"
     volumes:

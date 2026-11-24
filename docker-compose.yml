@@ -1,11 +1,11 @@
 version: "3.3"
 services:
-  ontology-tool:
+  knownexus:
     build:
       context: .
       dockerfile: Dockerfile
-    image: multi-view-ontology-tool:latest
-    container_name: multi-view-ontology-tool
+    image: knownexus:latest
+    container_name: knownexus
     ports:
       - "3001:3001"
     volumes:

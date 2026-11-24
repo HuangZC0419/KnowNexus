@@ -1,4 +1,6 @@
-# 多视角本体建模工具 (Multi-view Ontology Modeling Tool)
+# 装配工艺知识库软件（KnowNexus）
+
+> 项目代号：KnowNexus
 
 **Windows 7 SP1 64 位离线部署：** 请先阅读 [Win7部署说明.md](Win7部署说明.md)，使用 `start_win7.bat`。下方的 Node/Vite 开发流程和 Linux Docker 部署说明不适用于这次 Win7 离线部署。
 
